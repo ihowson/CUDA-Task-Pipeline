@@ -1,3 +1,9 @@
+The files 'Makefile', 'helper_cuda.h' and 'helper_string.h' are reproduced
+unmodified from the CUDA development tools, and are not subject to the
+following license.
+
+---
+
 The MIT License (MIT)
 
 Copyright (c) 2015 Ian Howson
