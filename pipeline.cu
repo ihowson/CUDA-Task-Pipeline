@@ -13,15 +13,22 @@
 // C++ <atomic> doesn't work on Mac for whatever reason
 #include <libkern/OSAtomic.h>
 
+// consider electricfence
+// http://lh3lh3.users.sourceforge.net/memdebug.shtml
+// http://thingsilearned.com/2007/09/30/electric-fence-on-os-x/
+
 
 typedef struct _output_t {
     double sum;
     double mean;
     double variance;
+
+    double alpha;
+    double beta;
+    double log_likelihood;
 } output_t;
 
 void *thread(void *void_args);
-// __global__ void simple_kernel(double *g_chunk, output_t *g_output);
 
 void usage(char **argv)
 {
@@ -50,8 +57,8 @@ void usage(char **argv)
 // simultaneous kernel executions supported on the Kepler architecture.
 // Adjusting this may or may not provide performance improvement; I'm guessing
 // that it's best to keep it near the device configuration.
-// #define SIMULTANEOUS_KERNELS 32
-#define SIMULTANEOUS_KERNELS 4
+#define SIMULTANEOUS_KERNELS 32
+//#define SIMULTANEOUS_KERNELS 4
 //#define SIMULTANEOUS_KERNELS 2
 
 
@@ -63,6 +70,10 @@ typedef struct _thread_args_t
     double *host_dataset; // full dataset stored on host
     output_t *host_outputs; // outputs stored on host
     int *current_chunk_id; // pointer to shared chunk_id counter
+
+    // CUDA launch params
+    int gridSize;
+    int blockSize;
 } thread_args_t;
 
 #define NUM_CHUNKS 40000
@@ -73,11 +84,47 @@ typedef struct _thread_args_t
 
 #define OUTPUT_BYTES (NUM_CHUNKS * sizeof(output_t))
 
-#define GRID 16
-#define BLOCK 16
+// this is the MaxOccupancy suggested block size for GTX660
+#define BLOCK_SIZE 1024
 
-__global__ void simple_kernel(double *g_chunk)//, output_t *g_output)
+
+__global__ void simple_kernel(double *g_chunk, output_t *g_output)
 {
+    // TODO pass in chunk size as an arg rather than assuming CHUNK_ENTRIES
+    // g_chunk: pointer to the chunk that we will process. It could be modified in-place by the kernel.
+    // g_output: pointer to output struct for this chunk
+    unsigned len = CHUNK_ENTRIES;
+    double *input = g_chunk;
+
+    ///////////////////
+    // Adapted from https://gist.github.com/wh5a/4424992
+    //@@ Load a segment of the input vector into shared memory
+    __shared__ double partialSum[2 * BLOCK_SIZE];
+    unsigned int t = threadIdx.x, start = 2 * blockIdx.x * BLOCK_SIZE;
+    if (start + t < len)
+        partialSum[t] = input[start + t];
+    else
+        partialSum[t] = 0;
+    if (start + BLOCK_SIZE + t < len)
+        partialSum[BLOCK_SIZE + t] = g_chunk[start + BLOCK_SIZE + t];
+    else
+        partialSum[BLOCK_SIZE + t] = 0;
+    //@@ Traverse the reduction tree
+    for (unsigned int stride = BLOCK_SIZE; stride >= 1; stride >>= 1) {
+        __syncthreads();
+        if (t < stride)
+            partialSum[t] += partialSum[t+stride];
+    }
+    //@@ Write the computed sum of the block to the output vector at the 
+    //@@ correct index
+    if (t == 0)
+    {
+        g_output->sum = partialSum[0];
+    }
+    ///////////////////
+
+    // TODO: calculate log-likelihood of each observation given the component parameters
+
     /*
     // shared memory
     // the size is determined by the host application
@@ -92,29 +139,19 @@ __global__ void simple_kernel(double *g_chunk)//, output_t *g_output)
     sdata[tid] = g_chunk[tid];
     __syncthreads();
     */
+}
 
-
-
-    // perform some computations
-    double foobar = 0.0;
-    for (unsigned i = 0; i < 1000; i++)
-    {
-        foobar = foobar + 1 * 1.2;
-        // sdata[tid] += (float) num_threads * sdata[tid];
-    }
-    __syncthreads();
-
-    // write data to global memory
-    // the g_output pointer is empty right now
-    // g_output->mean = sdata[tid];
-    // g_odata[tid] = sdata[tid];
+void print_time_elapsed(struct timeval start_time, struct timeval end_time)
+{
+    double elapsed_time = (1000000.0 * (end_time.tv_sec - start_time.tv_sec) + end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+    printf("%f seconds elapsed\n", elapsed_time);
 }
 
 int main(int argc, char **argv)
 {
+    struct timeval start_time, end_time;
     int num_gpus;
     checkCudaErrors(cudaGetDeviceCount(&num_gpus));
-    // cudaGetDeviceCount(&num_gpus);
 
     assert(num_gpus == 1); // don't know what to do with multiple GPUs yet
     printf("There are %d GPUs\n", num_gpus);
@@ -135,8 +172,6 @@ int main(int argc, char **argv)
 
     printf("dataset is %lu bytes\n", DATASET_BYTES);
 
-    // printf("cuda error = %d\n", error);
-
     // fill it in with Uniform(0, 1)
     for (uint64_t i = 0; i < DATASET_ENTRIES; i++)
     {
@@ -145,19 +180,55 @@ int main(int argc, char **argv)
 
     printf("The first few entries look like %f %f %f.\n", dataset[0], dataset[1], dataset[2]);
 
+
+    // cpu-calculated results
+    output_t cpu_outputs[NUM_CHUNKS];
+
+    gettimeofday(&start_time, 0);
+    for (unsigned i = 0; i < NUM_CHUNKS; i++)
+    {
+        double total = 0.0;
+
+        for (unsigned j = 0; j < CHUNK_ENTRIES; j++)
+        {
+            total += dataset[i * CHUNK_ENTRIES + j];
+        }
+
+        cpu_outputs[i].sum = total;
+    }
+    gettimeofday(&end_time, 0);
+
+    printf("CPU: ");
+    print_time_elapsed(start_time, end_time);
+    
+    // sum up the first few chunks for later verification
+    for (unsigned i = 0; i < 4; i++)
+    {
+        printf("cpu: chunk %d sum is %f\n", i, cpu_outputs[i].sum);
+    }
+
     // make space for output results
     output_t *outputs = (output_t *)calloc(NUM_CHUNKS, sizeof(output_t));
 
-    struct timeval start_time, end_time;
-    double elapsed_time;
-// #if 0 // DISABLED to make my life easier
     printf("Processing chunks sequentially\n");
 
     double *device_chunk;
     output_t *device_output;
-    // TODO check errors
     checkCudaErrors(cudaMalloc(&device_chunk, CHUNK_BYTES));
     checkCudaErrors(cudaMalloc(&device_output, OUTPUT_BYTES));
+
+    // http://stackoverflow.com/a/25010560/591483
+    int blockSize;
+    int minGridSize;
+
+    // NOTE: update this when shared memory usage changes
+    // assume one thread per observation
+    int N = CHUNK_ENTRIES;
+    cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, (void *)simple_kernel, 0, N); 
+    int gridSize = (N + blockSize - 1) / blockSize; 
+    printf("gridSize=%d, blockSize=%d\n", gridSize, blockSize);
+
+    assert(blockSize == BLOCK_SIZE);
 
     gettimeofday(&start_time, 0);
 
@@ -168,22 +239,27 @@ int main(int argc, char **argv)
         checkCudaErrors(cudaMemcpy(device_chunk, &dataset[i * CHUNK_ENTRIES], CHUNK_BYTES, cudaMemcpyHostToDevice));
 
         // do work on gpu
-        simple_kernel<<<GRID, BLOCK>>>(device_chunk);//, device_output);
+        simple_kernel<<<gridSize, blockSize>>>(device_chunk, device_output);
 
         // copy results to host
         checkCudaErrors(cudaMemcpy(&(outputs[i]), device_output, sizeof(output_t), cudaMemcpyDeviceToHost));
     }
 
     gettimeofday(&end_time, 0);
-    elapsed_time = (1000000.0 * (end_time.tv_sec - start_time.tv_sec) + end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+
+
+    for (unsigned i = 0; i < 4; i++)
+    {
+        printf("cuda seq: chunk %d sum is %f\n", i, outputs[i].sum);
+    }
+
+    printf("sequential CUDA: ");
+    print_time_elapsed(start_time, end_time);
 
     cudaFree(device_chunk);
     cudaFree(device_output);
 
-    printf("Processed %i chunks in %fms\n", NUM_CHUNKS, elapsed_time);
-
-    printf("TODO: dump a few outputs for verification\n");
-// #endif
+    printf("Processed %i chunks\n", NUM_CHUNKS);
 
 
 
@@ -219,6 +295,8 @@ int main(int argc, char **argv)
         args[i].current_chunk_id = &current_chunk_id;
         args[i].host_dataset = dataset;
         args[i].host_outputs = host_outputs;
+        args[i].gridSize = gridSize;
+        args[i].blockSize = blockSize;
 
         int rc = pthread_create(&threads[i], NULL, thread, (void *)&args[i]);
         assert(rc == 0);
@@ -233,8 +311,15 @@ int main(int argc, char **argv)
     // TODO wait for threads to join
 
     gettimeofday(&end_time, 0);
-    elapsed_time = (1000000.0 * (end_time.tv_sec - start_time.tv_sec) + end_time.tv_usec - start_time.tv_usec) / 1000000.0;
-    printf("Processed %i chunks in %fms\n", NUM_CHUNKS, elapsed_time);
+    printf("Processed %i chunks\n", NUM_CHUNKS);
+
+    printf("cuda parallel: ");
+    print_time_elapsed(start_time, end_time);
+    
+    for (unsigned i = 0; i < 4; i++)
+    {
+        printf("cuda parallel: chunk %d sum is %f\n", i, host_outputs[i].sum);
+    }
 
     //cudaFree(device_chunk);
     //cudaFree(device_output);
@@ -249,6 +334,7 @@ void *thread(void *void_args)
     cudaStream_t stream;
 
     cudaSetDevice(0); // TODO: adjust when we have multiple GPUs; probably assign a new group of threads to each GPU
+
 
     error = cudaStreamCreate(&stream);
 
@@ -270,20 +356,14 @@ void *thread(void *void_args)
 
         // printf("thread %d chunk %d host_ptr %p\n", args->thread_id, chunk_id, host_chunk_ptr);
 
-
-        // printf("%d: pre copy\n", args->thread_id);
         cudaMemcpyAsync(args->device_chunk, host_chunk_ptr, CHUNK_BYTES, cudaMemcpyHostToDevice, stream);
-        // printf("%d: pre-sync\n", args->thread_id);
         cudaStreamSynchronize(stream);
+
         // do work on gpu
-        // printf("%d: launch\n", args->thread_id);
-        // 2048 simultaneous launches?
-        simple_kernel<<<GRID, BLOCK, 0, stream>>>(args->device_chunk);//, args->device_output);
-        // simple_kernel<<< grid, threads, mem_size, ??? >>>(data, left, nright, depth+1);
-        // kernel_call<<<dimGrid, dimBlock, 0>>>();
+        simple_kernel<<<args->gridSize, args->blockSize, 0, stream>>>(args->device_chunk, args->device_output);
         cudaStreamSynchronize(stream);
-        // printf("%d: sync\n", args->thread_id);
-        // These small (16 byte) copies are relatively inefficient. Eventually we'll have all of the posterior probabilities to copy back, so it might not matter.
+
+        // These small (24 byte) copies are relatively inefficient. Eventually we'll have all of the posterior probabilities to copy back, so it might not matter.
         cudaMemcpyAsync(&(args->host_outputs[chunk_id]), args->device_output, sizeof(output_t), cudaMemcpyDeviceToHost, stream);
         cudaStreamSynchronize(stream);
 
