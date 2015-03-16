@@ -39,6 +39,7 @@ x_expanded <- matrix(x, nrow=N, ncol=2, byrow=FALSE)
 while (diff > epsilon && iterations <= max.iters) {
     iterations <- iterations + 1
 
+    # TODO: this might be faster/better expressed using rep_len
     mu_expanded <- matrix(mu, nrow=N, ncol=2, byrow=TRUE)
     lambda_expanded <- matrix(lambda, nrow=N, ncol=2, byrow=TRUE)
     alpha_expanded <- matrix(alpha, nrow=N, ncol=2, byrow=TRUE)
@@ -47,6 +48,8 @@ while (diff > epsilon && iterations <= max.iters) {
 
     # calculate p(l|x_i, Theta^g)
     x.prob <- dinvgauss(x_expanded, mean=mu_expanded, shape=lambda_expanded)  # N x 2 matrix
+
+    # TODO implement stopping conditions
 
     # NOTE probably don't need to actually do this - wikipedia says it's optional
 
