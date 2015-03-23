@@ -4,9 +4,10 @@
 #include <stdio.h>
 #include <sys/time.h>
 
-#include <cuda_runtime.h>
-#include <math_constants.h>
 #include "helper_cuda.h"
+
+#include "common.h"
+
 
 // SMS=30 dbg=1 make
 
@@ -18,36 +19,9 @@
 // http://lh3lh3.users.sourceforge.net/memdebug.shtml
 // http://thingsilearned.com/2007/09/30/electric-fence-on-os-x/
 
-#define NUM_MIXTURE_COMPONENTS 2
-#define M NUM_MIXTURE_COMPONENTS
-// FIXME: should be set within the kernel func
-#define N CHUNK_ENTRIES
-
-// posterior probability for each component
-typedef struct _posterior_t
-{
-    double component[NUM_MIXTURE_COMPONENTS];
-} posterior_t;
-
-int g_paronly = 0;
-
-typedef struct _invgauss_params_t
-{
-    double mu;
-    double lambda;
-    double alpha; // mixing proportion
-} invgauss_params_t;
-
-typedef struct _invgauss_control_t
-{
-    unsigned iterations;
-    double log_likelihood;
-
-    // fitted distribution parameters
-    invgauss_params_t params[NUM_MIXTURE_COMPONENTS];
-} invgauss_control_t;
-
-typedef invgauss_control_t control_t;
+int g_runcpu = 1;
+int g_runser = 1;
+int g_runpar = 1;
 
 void *thread(void *void_args);
 
@@ -81,10 +55,6 @@ void usage(char **argv)
 #define SIMULTANEOUS_KERNELS 32
 //#define SIMULTANEOUS_KERNELS 4
 
-
-// TODO: this should be configurable and/or read from command line params
-#define MAX_ITERATIONS 100
-
 typedef struct _thread_args_t
 {
     unsigned thread_id;
@@ -103,27 +73,7 @@ typedef struct _thread_args_t
     int blockSize;
 } thread_args_t;
 
-// FIXME: 40kchunks is taking too long right now
-//#define NUM_CHUNKS 40000
-#define NUM_CHUNKS 4000
-#define CHUNK_ENTRIES 2000
-
-#define CHUNK_BYTES (CHUNK_ENTRIES * sizeof(double))
-#define POSTERIOR_CHUNK_BYTES (CHUNK_ENTRIES * sizeof(posterior_t))
-#define ALL_CHUNK_BYTES (DATASET_ENTRIES * sizeof(posterior_t))
-#define DATASET_ENTRIES (CHUNK_ENTRIES * NUM_CHUNKS)
-#define DATASET_BYTES (sizeof(double) * DATASET_ENTRIES)
-
-#define ALL_POSTERIOR_BYTES (sizeof(posterior_t) * DATASET_ENTRIES)
-
-#define CONTROL_BYTES (NUM_CHUNKS * sizeof(control_t))
-
-// this is the MaxOccupancy suggested block size for GTX660
-#define BLOCK_SIZE 1024
-
-
-// density of the inverse gaussian distribution
-__host__ __device__ double dinvgauss(double x, double mu, double lambda)
+__host__ __device__ double old_dinvgauss(double x, double mu, double lambda)
 {
     // TODO would be nice to assert that x > 0 and lambda = 0
 
@@ -252,7 +202,7 @@ __global__ void inverse_gaussian_em_kernel(double *g_chunk, invgauss_control_t *
         for (unsigned m = 0; m < M; m++)
         {
             // calculate p(l|x_i, Theta^g)
-            x_prob[m] = dinvgauss(x, params[m].mu, params[m].lambda);
+            x_prob[m] = old_dinvgauss(x, params[m].mu, params[m].lambda);
             weighted_prob[m] = params[m].alpha * x_prob[m];
         }
 
@@ -426,7 +376,18 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < argc; i++)
     {
         if (0 == strcmp(argv[i], "--paronly"))
-            g_paronly = 1;
+        {
+            g_runcpu = 0;
+            g_runser = 0;
+            g_runpar = 1;
+        }
+
+        if (0 == strcmp(argv[i], "--seronly"))
+        {
+            g_runcpu = 0;
+            g_runser = 1;
+            g_runpar = 0;
+        }
     }
 
     checkCudaErrors(cudaGetDeviceCount(&num_gpus));
@@ -469,13 +430,16 @@ int main(int argc, char **argv)
 
     // NOTE: update this - shared memory usage has changed
     // assume one thread per observation
-    cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, (void *)inverse_gaussian_em_kernel, 0, N); 
-    int gridSize = (N + blockSize - 1) / blockSize; 
-    printf("gridSize=%d, blockSize=%d\n", gridSize, blockSize);
+    // FIXME re-add
+    // cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, (void *)inverse_gaussian_em_kernel, 0, N); 
+    // int gridSize = (N + blockSize - 1) / blockSize; 
+    // printf("gridSize=%d, blockSize=%d\n", gridSize, blockSize);
+    int gridSize = 2;
+    blockSize = 1024;
 
     assert(blockSize == BLOCK_SIZE);
 
-    if (g_paronly == 0)
+    if (g_runcpu)
     {
         printf("CPU calculation is disabled; it's not implemented yet\n");
         /*
@@ -492,7 +456,7 @@ int main(int argc, char **argv)
                 unsigned global_index = i * CHUNK_ENTRIES + j;
 
                 // posterior[global_index] += dataset[global_index];
-                posterior[global_index] = dinvgauss(dataset[global_index], 1.0, 1.0);
+                posterior[global_index] = old_dinvgauss(dataset[global_index], 1.0, 1.0);
             }
 
             // TODO you could calculate llik here
@@ -517,8 +481,18 @@ int main(int argc, char **argv)
         printf("Clearing posterior probabilities...\n");
         memset(posterior, 0, ALL_POSTERIOR_BYTES);
 
-        ///////////////////////////////////
+    }
 
+    if (g_runser)
+    {
+        serial_bulk(dataset);
+    }
+
+
+#if 0
+    // old serial CUDA code
+    if (g_runser)
+    {
         // make space for control results
         control_t *controls = (control_t *)calloc(NUM_CHUNKS, sizeof(control_t));
 
@@ -552,7 +526,6 @@ int main(int argc, char **argv)
 
         for (unsigned i = 0; i < 4; i++)
         {
-            // printf("cuda seq: chunk %d sum is %f\n", i, controls[i].sum);
             // FIXME: hardcoded component numbers
             printf("cuda seq: posterior %d is %f %f\n", i, posterior[i].component[0], posterior[i].component[1]);
         }
@@ -570,72 +543,74 @@ int main(int argc, char **argv)
 
         printf("Clearing posterior probabilities...\n");
         memset(posterior, 0, ALL_POSTERIOR_BYTES);
-
-        ///////////////////////////////////
     }
+#endif
 
-    int32_t current_chunk_id = 0;
-
-    printf("Processing %d chunks simultaneously\n", SIMULTANEOUS_KERNELS);
-    // fire off 16-32 threads; that'll make the logic simpler for you
-
-    double *device_chunks[SIMULTANEOUS_KERNELS];
-    control_t *device_controls[SIMULTANEOUS_KERNELS];
-    posterior_t *device_posteriors[SIMULTANEOUS_KERNELS];
-    control_t host_controls[NUM_CHUNKS];
-    
-    for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
+    if (g_runpar)
     {
-        checkCudaErrors(cudaMalloc((void **)&(device_chunks[i]), CHUNK_BYTES));
-        checkCudaErrors(cudaMalloc((void **)&(device_controls[i]), CONTROL_BYTES));
-        checkCudaErrors(cudaMalloc((void **)&(device_posteriors[i]), POSTERIOR_CHUNK_BYTES));
+        int32_t current_chunk_id = 0;
+
+        printf("Processing %d chunks simultaneously\n", SIMULTANEOUS_KERNELS);
+        // fire off 16-32 threads; that'll make the logic simpler for you
+
+        double *device_chunks[SIMULTANEOUS_KERNELS];
+        control_t *device_controls[SIMULTANEOUS_KERNELS];
+        posterior_t *device_posteriors[SIMULTANEOUS_KERNELS];
+        control_t host_controls[NUM_CHUNKS];
+        
+        for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
+        {
+            checkCudaErrors(cudaMalloc((void **)&(device_chunks[i]), CHUNK_BYTES));
+            checkCudaErrors(cudaMalloc((void **)&(device_controls[i]), CONTROL_BYTES));
+            checkCudaErrors(cudaMalloc((void **)&(device_posteriors[i]), POSTERIOR_CHUNK_BYTES));
+        }
+
+        pthread_t threads[SIMULTANEOUS_KERNELS];
+        thread_args_t args[SIMULTANEOUS_KERNELS];
+
+        gettimeofday(&start_time, 0);
+
+        // launch threads
+        for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
+        {
+            // set up arguments
+            args[i].thread_id = i;
+            args[i].device_chunk = device_chunks[i];
+            args[i].device_posterior = device_posteriors[i];
+            args[i].device_control = device_controls[i];
+            args[i].current_chunk_id = &current_chunk_id;
+            args[i].host_dataset = dataset;
+            args[i].host_controls = host_controls;
+            args[i].host_posterior = posterior;
+            args[i].gridSize = gridSize;
+            args[i].blockSize = blockSize;
+
+            int rc = pthread_create(&threads[i], NULL, thread, (void *)&args[i]);
+            assert(rc == 0);
+        }
+
+        // join threads
+        for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
+        {
+            pthread_join(threads[i], NULL);
+        }
+
+        gettimeofday(&end_time, 0);
+        printf("Processed %i chunks\n", NUM_CHUNKS);
+
+        printf("cuda parallel: ");
+        print_time_elapsed(start_time, end_time);
+        
+        for (unsigned i = 0; i < 4; i++)
+        {
+            // printf("cuda parallel: chunk %d sum is %f\n", i, host_controls[i].sum);
+            // FIXME: hardcoded component numbers
+            printf("cuda parallel: posterior %d is %f %f\n", i, posterior[i].component[0], posterior[i].component[1]);
+        }
+
+        //cudaFree(device_chunk);
+        //cudaFree(device_control);
     }
-
-    pthread_t threads[SIMULTANEOUS_KERNELS];
-    thread_args_t args[SIMULTANEOUS_KERNELS];
-
-    gettimeofday(&start_time, 0);
-
-    // launch threads
-    for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
-    {
-        // set up arguments
-        args[i].thread_id = i;
-        args[i].device_chunk = device_chunks[i];
-        args[i].device_posterior = device_posteriors[i];
-        args[i].device_control = device_controls[i];
-        args[i].current_chunk_id = &current_chunk_id;
-        args[i].host_dataset = dataset;
-        args[i].host_controls = host_controls;
-        args[i].host_posterior = posterior;
-        args[i].gridSize = gridSize;
-        args[i].blockSize = blockSize;
-
-        int rc = pthread_create(&threads[i], NULL, thread, (void *)&args[i]);
-        assert(rc == 0);
-    }
-
-    // join threads
-    for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
-    {
-        pthread_join(threads[i], NULL);
-    }
-
-    gettimeofday(&end_time, 0);
-    printf("Processed %i chunks\n", NUM_CHUNKS);
-
-    printf("cuda parallel: ");
-    print_time_elapsed(start_time, end_time);
-    
-    for (unsigned i = 0; i < 4; i++)
-    {
-        // printf("cuda parallel: chunk %d sum is %f\n", i, host_controls[i].sum);
-        // FIXME: hardcoded component numbers
-        printf("cuda parallel: posterior %d is %f %f\n", i, posterior[i].component[0], posterior[i].component[1]);
-    }
-
-    //cudaFree(device_chunk);
-    //cudaFree(device_control);
 }
 
 void *thread(void *void_args)
