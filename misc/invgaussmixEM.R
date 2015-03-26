@@ -83,14 +83,6 @@ invgaussmixEM <- function(x) {
         # LATER: it might make sense to try this algorithm using RGPU or something - it would be ideal to be able to plug in R code to your CUDA code. tHis might be a halfway option taht is fast enough
     }
 
-    cat('fit alpha: ')
-    cat(alpha)
-    cat(', lambda: ')
-    cat(lambda)
-    cat(', mu: ')
-    cat(mu)
-    cat('\n')
-
     result <- list(x=x, alpha=alpha, mu=mu, lambda=lambda)  # TODO add llik here
     class(result) <- "mixEM"
     result

@@ -1,5 +1,7 @@
 #!/usr/bin/env Rscript
 
+source('invgaussmixEM.R')
+
 require(statmod)
 
 # Prototype of inverse Gaussian mixture models fit with EM algorithm
@@ -14,3 +16,12 @@ lambdas <- c(30, 0.2)
 x <- rinvgauss(n=N, mean=mus[components], shape=lambdas[components])
 
 fit <- invgaussmixEM(x)
+
+cat('fit alpha: ')
+cat(fit$alpha)
+cat(', lambda: ')
+cat(fit$lambda)
+cat(', mu: ')
+cat(fit$mu)
+cat('\n')
+
