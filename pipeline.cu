@@ -269,6 +269,7 @@ int main(int argc, char **argv)
     struct timeval start_time, end_time;
     int num_gpus;
 
+    /*
     for (unsigned i = 0; i < argc; i++)
     {
         if (0 == strcmp(argv[i], "--paronly"))
@@ -285,13 +286,16 @@ int main(int argc, char **argv)
             g_runpar = 0;
         }
     }
+    */
+
+    g_runcpu = 0;
+    g_runser = 1;
+    g_runpar = 0;
 
     checkCudaErrors(cudaGetDeviceCount(&num_gpus));
 
     assert(num_gpus == 1); // don't know what to do with multiple GPUs yet
     printf("There are %d GPUs\n", num_gpus);
-
-    printf("Making up some data...\n");
 
     // For now, I'm assuming that the entire dataset resides within host RAM, in one single huge block
 
@@ -311,14 +315,41 @@ int main(int argc, char **argv)
 
     printf("dataset is %lu bytes\n", DATASET_BYTES);
 
+    printf("Loading test data...\n");
+    // for now, we just load one chunk and repeat it across the entire dataset
+    for (unsigned i = 0; i < NUM_CHUNKS; i++)
+    {
+        printf("\tchunk %d...\n", i);
+        FILE *f = fopen("test.data", "r");
+
+        for (unsigned data_index = 0; data_index < N; data_index++)
+        {
+            if (1 != fscanf(f, "%lf", &dataset[i * N + data_index]))
+            {
+                printf("ERROR: ran out of data to read at i=%d index=%d\n", i, data_index);
+            }
+        }
+
+        fclose(f);
+    }
+
+#if 0
+    printf("Making up some data...\n");
+
     // TODO you could fill it with inv gaussian data
     // fill it in with Uniform(0, 1)
     for (uint64_t i = 0; i < DATASET_ENTRIES; i++)
     {
         dataset[i] = (double)rand() / (double)INT_MAX;
     }
-
-    printf("The first few entries look like %f %f %f.\n", dataset[0], dataset[1], dataset[2]);
+#endif
+    int dump_entries = 8;
+    printf("The first %d entries look like ", dump_entries);
+    for (int i = 0; i < dump_entries; i++)
+    {
+        printf("%lf ", dataset[i]);
+    }
+    printf("\n");
 
     // http://stackoverflow.com/a/25010560/591483
     int blockSize;
