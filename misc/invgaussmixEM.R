@@ -14,11 +14,10 @@ invgaussmixEM <- function(x) {
     alpha <- matrix(c(0.5, 0.5), nrow=1)  # mixing components
     epsilon <- 0.000001
     diff <- 1
+    log.lik <- epsilon + 1
 
     x_expanded <- matrix(x, nrow=N, ncol=2, byrow=FALSE)
     # need an initial value for llik here - start at infinity?
-
-    # prior = todo.make.a.matrix(rows=N cols=2)
 
     # algorithm based off http://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm#Gaussian_mixture
 
@@ -35,7 +34,20 @@ invgaussmixEM <- function(x) {
         # calculate p(l|x_i, Theta^g)
         x.prob <- dinvgauss(x_expanded, mean=mu_expanded, shape=lambda_expanded)  # N x 2 matrix
 
-        # TODO implement stopping conditions
+        # have we converged to within epsilon?
+        # we do this up here and not at the end as we're doing parts of the calculation anyway
+        # loglik = sum_N(log(sum_M(alpha_m * p_m(x))))
+        log.lik.old <- log.lik
+        log.lik <- sum(log(rowSums(alpha_expanded * x.prob)))
+        # cat('log-likelihood is ')
+        # cat(log.lik)
+        # cat('\n')
+        # TODO this abs isn't ideal - shouldn't be necessary
+        # TODO also catch if log-lik increases, which shouldn't happen (supposed to flag non-convergence and then try again with new initial conditions)
+        diff <- abs(log.lik.old - log.lik)
+        if (diff < epsilon) {
+            break
+        }
 
         # NOTE probably don't need to actually do this - wikipedia says it's optional
 
@@ -72,14 +84,14 @@ invgaussmixEM <- function(x) {
     }
 
     cat('fit alpha: ')
-    cat(alpha.new)
+    cat(alpha)
     cat(', lambda: ')
-    cat(lambda.new)
+    cat(lambda)
     cat(', mu: ')
-    cat(mu.new)
+    cat(mu)
     cat('\n')
 
-    result <- list(x=x, alpha=alpha.new, mu=mu.new, lambda=lambda.new)  # TODO add llik here
+    result <- list(x=x, alpha=alpha, mu=mu, lambda=lambda)  # TODO add llik here
     class(result) <- "mixEM"
     result
 }
