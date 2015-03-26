@@ -118,8 +118,9 @@ void serial_thrust(double *dataset)
     }
 
     // FIXME FIXME: we're getting a crash on the last 8; presumably we have an out-of-range memory access
-    // for (unsigned n = 0; n < NUM_CHUNKS - 10; n++)
-    for (unsigned n = 0; n < NUM_CHUNKS; n++)
+    printf("FIXME: skipping last 10 chunks due to unknown bug\n");
+    for (unsigned n = 0; n < NUM_CHUNKS - 10; n++)
+    // for (unsigned n = 0; n < NUM_CHUNKS; n++)
     {
         // init device parameters
         for (unsigned m = 0; m < M; m++)
@@ -229,12 +230,14 @@ void serial_thrust(double *dataset)
                 params_new[m].lambda = member_prob_sum / lambda_colSum;
             }
 
+            /*
             printf("iteration %d\n", iteration);
             for (unsigned m = 0; m < M; m++)
             {
                 invgauss_params_t *p = &params_new[m];
                 printf("\tcomp %d: alpha=%lf, mu=%lf, lambda=%lf\n", m, p->alpha, p->mu, p->lambda);
             }
+            */
 
             for (unsigned m = 0; m < M; m++)
             {
@@ -253,6 +256,8 @@ void serial_thrust(double *dataset)
             }
             */
         }
+
+        // exit(0);
 
 
         // copy result to host
