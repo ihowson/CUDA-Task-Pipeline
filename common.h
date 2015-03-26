@@ -14,7 +14,7 @@
 
 // FIXME: 40kchunks is taking too long right now
 //#define NUM_CHUNKS 40000
-#define NUM_CHUNKS 4000
+#define NUM_CHUNKS 20
 #define CHUNK_ENTRIES 2000
 
 #define CHUNK_BYTES (CHUNK_ENTRIES * sizeof(double))
@@ -55,7 +55,7 @@ typedef struct _invgauss_control_t
 typedef invgauss_control_t control_t;
 
 
-extern void serial_bulk(double *dataset);
+extern void serial_thrust(double *dataset);
 // extern __device__ double dinvgauss(double x, double mu, double lambda);
 
 

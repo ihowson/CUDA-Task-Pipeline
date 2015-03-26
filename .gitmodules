@@ -1,6 +1,3 @@
-[submodule "bulk"]
-	path = bulk
-	url = https://github.com/jaredhoberock/bulk
 [submodule "thrust"]
 	path = thrust
 	url = https://github.com/thrust/thrust.git

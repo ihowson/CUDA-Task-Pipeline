@@ -426,7 +426,6 @@ int main(int argc, char **argv)
 
     // http://stackoverflow.com/a/25010560/591483
     int blockSize;
-    int minGridSize;
 
     // NOTE: update this - shared memory usage has changed
     // assume one thread per observation
@@ -485,7 +484,7 @@ int main(int argc, char **argv)
 
     if (g_runser)
     {
-        serial_bulk(dataset);
+        serial_thrust(dataset);
     }
 
 
