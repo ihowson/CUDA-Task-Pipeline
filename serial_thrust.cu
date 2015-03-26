@@ -10,7 +10,7 @@
 
 #include "common.h"
 
-to test this, it might be best to load a CSV with test data and do an A/B comparison against the R implementation
+// to test this, it might be best to load a CSV with test data and do an A/B comparison against the R implementation
 
 __host__ __device__ double dinvgauss(double x, double mu, double lambda)
 {
@@ -21,140 +21,6 @@ __host__ __device__ double dinvgauss(double x, double mu, double lambda)
     // http://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.stats.invgauss.html
     // invgauss.pdf(x, mu) = 1 / sqrt(2*pi*x**3) * exp(-(x-mu)**2/(2*x*mu**2))
 }
-
-#if 0
-struct member_prob_functor
-{
-    /*
-     * Calculate membership probability (TODO equation) for each observation.
-     * 
-     * x is a pointer to the first input x. We know that there are N 
-     * params is an M-element array of component parameters
-     * chunk is an N-element array of observations
-     * member_prob is an MxN matrix of probabilities
-     */
-    __host__ __device__
-    void operator()(const double *x, const invgauss_params_t& params) const
-        // bulk::agent<> &self, invgauss_params_t *params, double *chunk, double *member_prob)
-    {
-        unsigned t = self.index();
-
-        // This could be expressed more parallel, but we have plenty of parallelism already across tasks; this is much easier to understand
-        // it is a little awkward that we're continually running for loops over the components; a matrix-like representation would be cleaner. We don't actually need matrix ops, though - we only do element-wise multiply and col/row sums.
-        double weighted_prob[M]; // per-component weighted sum of probabilities
-        for (unsigned m = 0; m < M; m++)
-        {
-            // calculate p(l|x_i, Theta^g)
-            double x = chunk[m * N + t];
-            double x_prob = dinvgauss(x, params[m].mu, params[m].lambda);
-            weighted_prob[m] = params[m].alpha * x_prob;
-        }
-
-        double sum_prob = 0.0f;
-        for (unsigned m = 0; m < M; m++)
-        {
-            sum_prob += weighted_prob[m];
-        }
-
-        for (unsigned m = 0; m < M; m++)
-        {
-            member_prob[m * N + t] = weighted_prob[m] / sum_prob;
-        }
-    }
-};
-#endif
-
-#if 0
-// copied from https://github.com/jaredhoberock/bulk/blob/92b634e7f3def8c8e852e4bfcc4f6a4c74d0f465/sum.cu
-// changed instances of 'int' to 'double'
-struct sum_double
-{
-    __device__ void operator()(bulk::concurrent_group<> &g, thrust::device_ptr<double> data, thrust::device_ptr<double> result)
-    {
-        unsigned int n = g.size();
-
-        // allocate some special memory that the group can use for fast communication
-        double *s_data = static_cast<double*>(bulk::malloc(g, n * sizeof(int)));
-
-        // the whole group cooperatively copies the data
-        bulk::copy_n(g, data, n, s_data);
-
-        while(n > 1)
-        {
-            unsigned int half_n = n / 2;
-
-            if(g.this_exec.index() < half_n)
-            {
-                s_data[g.this_exec.index()] += s_data[n - g.this_exec.index() - 1];
-            }
-
-            // the group synchronizes after each update
-            g.wait();
-
-            n -= half_n;
-        }
-
-        if(g.this_exec.index() == 0)
-        {
-            *result = s_data[0];
-        }
-
-        // wait for agent 0 to store the result
-        g.wait();
-
-        // free the memory cooperatively
-        bulk::free(g, s_data);
-    }
-};
-
-// TODO Thrust provides these and other common functors like plus and multiplies in the file thrust/functional.h.
-struct elementwise_multiply
-{
-    __device__ void operator()(bulk::agent<> &self, double *left, double *right, double *output)
-    {
-        unsigned t = self.index();
-        output[t] = left[t] * right[t];
-    }
-};
-
-struct subtract_scalar
-{
-    __device__ void operator()(bulk::agent<> &self, double *left, double right, double *output)
-    {
-        unsigned t = self.index();
-        output[t] = left[t] - right;
-    }
-};
-
-struct lambda_element
-{
-    __device__ void operator()(bulk::agent<> &self, double *chunk, double mu, double *dev_member_prob, double *temp)
-    {
-        unsigned t = self.index();
-        double x = chunk[t];
-        double x_minus_mu = x - mu;
-
-        temp[t] = x_minus_mu * x_minus_mu * dev_member_prob[t] / (mu * mu * x);
-    }
-};
-#endif
-
-/*
-// arg1, arg2, result
-struct x_prob_functor : public thrust::binary_function<invgauss_params_t, double, double>
-{
-    const invgauss_params_t params;
-
-    __host__ __device__
-    x_prob_functor(invgauss_params_t _params) : params(_params) {}
-
-    __host__ __device__
-    double operator()(const invgauss_params_t& params, const double& x) const { 
-        return dinvgauss(x, params.mu, params.lambda);
-    }
-};
-*/
-
 
 // x.prob <- dinvgauss(x_expanded, mean=mu_expanded, shape=lambda_expanded)  # N x M matrix
 // weighted.prob <- alpha_expanded * x.prob  # per-component weighted sum of probabilities (Nx2)
@@ -196,13 +62,6 @@ void serial_thrust(double *dataset)
     thrust::device_vector<double> dev_member_prob(M * N);
     thrust::device_vector<double> dev_member_prob_times_x(M * N);
 
-    // thrust::device_vector<double> dev_member_prob_sum(M);
-    /*
-    device_vector<double> dev_member_prob_times_x_sum(M);
-    device_vector<double> dev_x_minus_mu(N);
-    device_vector<double> dev_temp(N);
-    */
-
     thrust::host_vector<invgauss_params_t> params_new(M);
 
     // starting parameters
@@ -215,8 +74,8 @@ void serial_thrust(double *dataset)
     }
 
     // FIXME FIXME: we're getting a crash on the last 8; presumably we have an out-of-range memory access
-    for (unsigned n = 0; n < NUM_CHUNKS - 10; n++)
-    // for (unsigned n = 0; n < NUM_CHUNKS; n++)
+    // for (unsigned n = 0; n < NUM_CHUNKS - 10; n++)
+    for (unsigned n = 0; n < NUM_CHUNKS; n++)
     {
         // init device parameters
         for (unsigned m = 0; m < M; m++)

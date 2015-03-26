@@ -113,60 +113,6 @@ double rinvgauss(double mu, double lambda)
 }
 */
 
-// FIXME: this should be somewhat dynamic depending on number of threads/data elements
-#define ELEM_2 2048
-
-/* 
-    int NearestPowerOf2 (int n)
-    {
-    if (!n) return n;  //(0 == 2^0)
-  
-    int x = 1;
-    while(x < n)
-    {
-        x <<= 1;
-    }
-    return x;
-}
- */
-
-// sum the values in temp; result goes into temp[0]
-// temp must have BLOCK_SIZE elements (even if there are less threads)
-// temp must be in __shared__ memory
-// n is number of data elements (TODO: this is ignored for now)
-// note that this DESTROYS the contents of temp
-__device__ void sum_reduce(double *temp, unsigned n)
-{
-    int thread2;
-
-    // FIXME: KLUDGE: hardcoded number of threads
-    int nTotalThreads = ELEM_2;
-    //int nTotalThreads = blockDim_2; // Total number of threads, rounded up to the next power of two
-    // supposed to use blockDim.x to determine number of threads
-
-    while (nTotalThreads > 1)
-    {
-        int halfPoint = (nTotalThreads >> 1); // divide by two
-        // only the first half of the threads will be active.
-
-        if (threadIdx.x < halfPoint)
-        {
-            thread2 = threadIdx.x + halfPoint;
-
-            // Skipping the fictious threads blockDim.x ... blockDim_2-1
-            if (thread2 < blockDim.x)
-            {
-                // Get the shared value stored by another thread
-                temp[threadIdx.x] += temp[thread2];
-            }
-        }
-        __syncthreads();
-
-        // Reducing the binary tree size by two:
-        nTotalThreads = halfPoint;
-    }
-}
-
 __global__ void inverse_gaussian_em_kernel(double *g_chunk, invgauss_control_t *g_control, posterior_t *g_posterior)
 {
     // the global memory cache might catch these, so probably no strong reason to put then in shared memory
@@ -225,7 +171,8 @@ __global__ void inverse_gaussian_em_kernel(double *g_chunk, invgauss_control_t *
         {
             temp[t] = member_prob[m][t]; // memcpy!
             __syncthreads();
-            sum_reduce(temp, CHUNK_ENTRIES);
+            // FIXME: BROKEN
+            // sum_reduce(temp, CHUNK_ENTRIES);
 
             // NOTE: this does the divide on all threads, which is wasteful, but we'd have to syncthreads anyway, so it probably does no harm. Probably better to keep this in registers rather than push to shared memory.
             member_prob_sum[m] = temp[0];
@@ -241,7 +188,8 @@ __global__ void inverse_gaussian_em_kernel(double *g_chunk, invgauss_control_t *
         {
             temp[t] = member_prob[m][t] * x;
             __syncthreads();
-            sum_reduce(temp, CHUNK_ENTRIES);
+            // FIXME: BROKEN
+            // sum_reduce(temp, CHUNK_ENTRIES);
 
             if (t == 0)
             {
@@ -255,7 +203,8 @@ __global__ void inverse_gaussian_em_kernel(double *g_chunk, invgauss_control_t *
             double x_minus_mu = x - params[m].mu;
             temp[t] = x_minus_mu * x_minus_mu * member_prob[m][t] / (params[m].mu * params[m].mu * x);
             __syncthreads();
-            sum_reduce(temp, CHUNK_ENTRIES);
+            // FIXME: BROKEN
+            // sum_reduce(temp, CHUNK_ENTRIES);
 
             // TODO: you could probably optimise this to minimise thread divergence or parallelise some of the work, though potential gains are pretty trivial
             if (t == 0)
@@ -300,67 +249,14 @@ __global__ void inverse_gaussian_em_kernel(double *g_chunk, invgauss_control_t *
     }
 
     /*
-    iterations 
-    loglike
-    params
+    stuff to return:
+        iterations 
+        loglike
+        params
     */
 
     // TODO: also calculate membership probabilities and copy them back to global memory for collection by host
-
-
-    // there's also https://code.google.com/p/stanford-cs193g-sp2010/source/browse/trunk/tutorials/sum_reduction.cu but it requires new kernel launches
-    // this is also a nice simple alternative: http://stackoverflow.com/a/15162163/591483 - but does it work?
-    ///// modified SUM REDUCTION from https://www.sharcnet.ca/help/index.php/CUDA_tips_and_tricks
-    // better if we use CUB or something
-
-    // implement E-step: calculate prior probabilities
-    // implement E-step: calculate Q
-
-    // implement M-step: calculate new alpha for each component
-    // implement M-step: calculate new lambda for each component
-    // implement M-step: calculate new mu for each component
-    // implement E-step: calculate posterior probabilities (or do we do this for the new parameters? or maybe just when we converge)
-
 }
-
-
-    // TODO: calculate log-likelihood of each observation given the component parameters
-
-    // e-step:
-    // gamma.ll <- function(theta, z,lambda, k) -sum(z*log(dens(lambda,theta,k)))
-    // dens1=dens(lambda,theta,k)
-    // z=dens1/apply(dens1,1,sum)
-    // posterior = z
-
-    // dens <- function(lambda, theta, k){
-    //     temp<-NULL
-    //     alpha=theta[1:k]
-    //     beta=theta[(k+1):(2*k)]
-    //     for(j in 1:k){
-    //      temp=cbind(temp,dgamma(x,shape=alpha[j],scale=beta[j]))  }
-    //     temp=t(lambda*t(temp))
-    //     temp
-    // }
-
-
-
-
-    /*
-    // shared memory
-    // the size is determined by the host application
-    extern  __shared__  float sdata[];
-
-    // access thread id
-    const unsigned int tid = threadIdx.x;
-    // access number of threads in this block
-    const unsigned int num_threads = blockDim.x;
-
-    // read in input data from global memory
-    sdata[tid] = g_chunk[tid];
-    __syncthreads();
-    */
-
-// TODO: check syncthreads usage carefully
 
 void print_time_elapsed(struct timeval start_time, struct timeval end_time)
 {
@@ -441,41 +337,6 @@ int main(int argc, char **argv)
     if (g_runcpu)
     {
         printf("CPU calculation is disabled; it's not implemented yet\n");
-        /*
-        // cpu-calculated results
-        control_t cpu_controls[NUM_CHUNKS];
-
-        gettimeofday(&start_time, 0);
-        for (unsigned i = 0; i < NUM_CHUNKS; i++)
-        {
-            // double total = 0.0;
-
-            for (unsigned j = 0; j < CHUNK_ENTRIES; j++)
-            {
-                unsigned global_index = i * CHUNK_ENTRIES + j;
-
-                // posterior[global_index] += dataset[global_index];
-                posterior[global_index] = old_dinvgauss(dataset[global_index], 1.0, 1.0);
-            }
-
-            // TODO you could calculate llik here
-            // cpu_controls[i].sum = total;
-        }
-        gettimeofday(&end_time, 0);
-
-        printf("CPU: ");
-        print_time_elapsed(start_time, end_time);
-        
-        // sum up the first few chunks for later verification
-        for (unsigned i = 0; i < 4; i++)
-        {
-            // printf("cpu: chunk %d sum is %f\n", i, cpu_controls[i].sum);
-            // FIXME: hardcoded component numbers
-            printf("cpu: chunk %d posterior is %f %f\n", i, posterior[i].component[0], posterior[i].component[1]);
-        }
-        */
-
-        ///////////////////////////////////
 
         printf("Clearing posterior probabilities...\n");
         memset(posterior, 0, ALL_POSTERIOR_BYTES);
@@ -486,64 +347,6 @@ int main(int argc, char **argv)
     {
         serial_thrust(dataset);
     }
-
-
-#if 0
-    // old serial CUDA code
-    if (g_runser)
-    {
-        // make space for control results
-        control_t *controls = (control_t *)calloc(NUM_CHUNKS, sizeof(control_t));
-
-        printf("Processing chunks sequentially\n");
-
-        double *device_chunk;
-        posterior_t *device_posterior;
-        control_t *device_control;
-        checkCudaErrors(cudaMalloc(&device_chunk, CHUNK_BYTES));
-        checkCudaErrors(cudaMalloc(&device_posterior, POSTERIOR_CHUNK_BYTES));
-        checkCudaErrors(cudaMalloc(&device_control, CONTROL_BYTES));
-
-        gettimeofday(&start_time, 0);
-
-        for (unsigned i = 0; i < NUM_CHUNKS; i++)
-        {
-            //printf("i = %d\n", i);
-            // copy data to gpu
-            checkCudaErrors(cudaMemcpy(device_chunk, &dataset[i * CHUNK_ENTRIES], CHUNK_BYTES, cudaMemcpyHostToDevice));
-
-            // do work on gpu
-            inverse_gaussian_em_kernel<<<gridSize, blockSize>>>(device_chunk, device_control, device_posterior);
-
-            // copy results to host
-            // TODO: combine control_t and the posterior chunk to cut down on small memcpy? Probably ends up being trivial as we only do this once for each EM+data chunk
-            checkCudaErrors(cudaMemcpy(&(controls[i]), device_control, sizeof(control_t), cudaMemcpyDeviceToHost));
-            checkCudaErrors(cudaMemcpy(&(posterior[i * CHUNK_ENTRIES]), device_posterior, POSTERIOR_CHUNK_BYTES, cudaMemcpyDeviceToHost));
-        }
-
-        gettimeofday(&end_time, 0);
-
-        for (unsigned i = 0; i < 4; i++)
-        {
-            // FIXME: hardcoded component numbers
-            printf("cuda seq: posterior %d is %f %f\n", i, posterior[i].component[0], posterior[i].component[1]);
-        }
-
-        printf("sequential CUDA: ");
-        print_time_elapsed(start_time, end_time);
-
-        cudaFree(device_chunk);
-        cudaFree(device_control);
-        cudaFree(device_posterior);
-
-        printf("Processed %i chunks\n", NUM_CHUNKS);
-
-        ///////////////////////////////////
-
-        printf("Clearing posterior probabilities...\n");
-        memset(posterior, 0, ALL_POSTERIOR_BYTES);
-    }
-#endif
 
     if (g_runpar)
     {
