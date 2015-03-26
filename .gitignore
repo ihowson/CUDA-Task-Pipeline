@@ -1,3 +1,5 @@
 *.o
 pipeline
 notes.txt
+test.data
+
