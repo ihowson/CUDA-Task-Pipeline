@@ -39,6 +39,44 @@ struct weighted_prob_functor
     }
 };
 
+// ((x_expanded - mu_expanded) ^ 2 * member.prob) / (mu_expanded ^ 2 * x_expanded)
+struct sum_term_functor
+{
+    invgauss_params_t params;
+    const double *chunk;
+    const double *member_prob;
+
+    sum_term_functor(
+        thrust::device_vector<double> _chunk,
+        thrust::device_ptr<double> _member_prob,
+        invgauss_params_t _params)
+    {
+        chunk = thrust::raw_pointer_cast(_chunk.data());
+        // chunk = thrust::raw_pointer_cast(_chunk);
+        member_prob = thrust::raw_pointer_cast(_member_prob);
+        params = _params;
+    }
+
+    __host__ __device__
+    double operator()(const int& i) const
+    { 
+        double x = chunk[i];
+        double x_minus_mu = x - params.mu;
+        return (x_minus_mu * x_minus_mu * member_prob[i]) / (params.mu * params.mu * x);
+    }
+};
+
+void dump_array(const char *msg, thrust::device_vector<double>& array)
+{
+    printf("%s: ", msg);
+    for (int i = 0; i < 4; i++)
+    {
+        printf("%lf ", (double)array[i]);
+    }
+
+    printf("\n");
+}
+
 void serial_thrust(double *dataset)
 {
     // persistent device memory
@@ -61,6 +99,7 @@ void serial_thrust(double *dataset)
     thrust::device_vector<double> dev_sum_prob(N);
     thrust::device_vector<double> dev_member_prob(M * N);
     thrust::device_vector<double> dev_member_prob_times_x(M * N);
+    thrust::device_vector<double> dev_sum_term(M * N);
 
     thrust::host_vector<invgauss_params_t> params_new(M);
 
@@ -109,6 +148,8 @@ void serial_thrust(double *dataset)
                     dev_weighted_prob.begin() + m * N, // output
                     // TODO: is this implicitly copying from host memory?
                     weighted_prob_functor(dev_params[m])); // operation
+
+                // FIXME: the weighted_probs are close, but not identical to the R implementation
  
                 // NOTE: this is cleaner and faster in raw C; we can fuse the addition with other operations rather than launching new kernels
                 // you might be able to achieve this with thrust::device and/or thrust::for_each
@@ -134,10 +175,13 @@ void serial_thrust(double *dataset)
             // there are no more interdepencies between components at this point, so the rest could run completely in parallel rather than using a for loop
             for (int m = 0; m < M; m++)
             {
+                unsigned vec_begin = m * N; // offset from the start of 2D matrices stored as 1D vector
+                unsigned vec_end = vec_begin + N; // offset of the end
+
                 // member.prob.sum <- colSums(member.prob)
                 // TODO you could use a transform_reduce here to eliminate the above 'divides' kernel launch
                 double member_prob_sum = thrust::reduce(
-                    dev_member_prob.begin(), dev_member_prob.end(), 
+                    dev_member_prob.begin() + vec_begin, dev_member_prob.begin() + vec_end, 
                     0.0, 
                     thrust::plus<double>());
 
@@ -149,9 +193,9 @@ void serial_thrust(double *dataset)
                 // TODO: this could run outside the for loop, but easier to express in here
                 // calculate (x * member.prob)
                 thrust::transform(
-                    dev_chunk.begin() + m * N, dev_chunk.end() + m * N + N, // input 1
-                    dev_member_prob.begin() + m * N, // input 2
-                    dev_member_prob_times_x.begin() + m * N, // output
+                    dev_chunk.begin() + vec_begin, dev_chunk.end() + vec_end, // input 1
+                    dev_member_prob.begin() + vec_begin, // input 2
+                    dev_member_prob_times_x.begin() + vec_begin, // output
                     thrust::multiplies<double>()); // operation
 
                 // calculate colSums
@@ -161,16 +205,41 @@ void serial_thrust(double *dataset)
                     thrust::plus<double>());
                 params_new[m].mu = colSum / member_prob_sum;
 
-                // lambda.new <- member.prob.sum / colSums(((x_expanded - mu_expanded) ^ 2 * member.prob) / (mu_expanded ^ 2 * x_expanded))
-                // TODO
+                //// lambda.new <- member.prob.sum / colSums(((x_expanded - mu_expanded) ^ 2 * member.prob) / (mu_expanded ^ 2 * x_expanded))
+
+                // calculate term to colSums
+                // we iterate over x *and* member.prob - the easiest thing to do is to pass in indices and index within the functor
+
+                // TODO: making a mockery of type safety
+                thrust::device_ptr<double> member_prob_ptr = &(*(dev_member_prob.begin() + vec_begin));
+                thrust::transform(
+                    thrust::make_counting_iterator(0), thrust::make_counting_iterator(N), // input
+                    dev_sum_term.begin() + vec_begin, // output
+                    // sum_term_functor(dev_chunk, member_prob_ptr, dev_params[m])); // operation
+                    sum_term_functor(dev_chunk, member_prob_ptr, dev_params[m])); // operation
+                double lambda_colSum = thrust::reduce(
+                    dev_sum_term.begin() + vec_begin, dev_sum_term.begin() + vec_end,
+                    0.0, 
+                    thrust::plus<double>());
+                params_new[m].lambda = member_prob_sum / lambda_colSum;
             }
 
             printf("iteration %d\n", iteration);
             for (unsigned m = 0; m < M; m++)
             {
-                printf("\tcomp %d: alpha=%f, mu=%f, lambda=%f\n", m, params_new[m].alpha, params_new[m].mu, params_new[m].lambda);
+                invgauss_params_t *p = &params_new[m];
+                printf("\tcomp %d: alpha=%lf, mu=%lf, lambda=%lf\n", m, p->alpha, p->mu, p->lambda);
             }
 
+            for (unsigned m = 0; m < M; m++)
+            {
+                invgauss_params_t *p = &params_new[m];
+                if (p->mu < 0.0 || p->lambda < 0.0 || p->alpha < 0.0 || p->alpha > 1.0 || isnan(p->mu) || isnan(p->lambda) || isnan(p->alpha))
+                {
+                    printf("ABORT: parameters out of range");
+                    exit(0);
+                }
+            }
             /*
             // TODO have we converged?
             if (t < M)

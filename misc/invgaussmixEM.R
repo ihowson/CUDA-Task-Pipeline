@@ -9,8 +9,8 @@ invgaussmixEM <- function(x) {
     N <- length(x)
 
     # TODO probably need to init these a little differently (random init) so they don't follow the exact same path
-    mu <- matrix(c(1, 1), nrow=1)
-    lambda <- matrix(c(1.01, 0.99), nrow=1)
+    mu <- matrix(c(1.01, 0.99), nrow=1)
+    lambda <- matrix(c(1.0, 1.0), nrow=1)
     alpha <- matrix(c(0.5, 0.5), nrow=1)  # mixing components
     epsilon <- 0.000001
     diff <- 1

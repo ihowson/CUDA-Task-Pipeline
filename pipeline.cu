@@ -315,11 +315,11 @@ int main(int argc, char **argv)
 
     printf("dataset is %lu bytes\n", DATASET_BYTES);
 
-    printf("Loading test data...\n");
+    printf("Loading test data...");
     // for now, we just load one chunk and repeat it across the entire dataset
     for (unsigned i = 0; i < NUM_CHUNKS; i++)
     {
-        printf("\tchunk %d...\n", i);
+        printf(".");
         FILE *f = fopen("test.data", "r");
 
         for (unsigned data_index = 0; data_index < N; data_index++)
@@ -332,6 +332,7 @@ int main(int argc, char **argv)
 
         fclose(f);
     }
+    printf("\n");
 
 #if 0
     printf("Making up some data...\n");
