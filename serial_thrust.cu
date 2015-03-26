@@ -10,16 +10,14 @@
 
 #include "common.h"
 
-// to test this, it might be best to load a CSV with test data and do an A/B comparison against the R implementation
 
 __host__ __device__ double dinvgauss(double x, double mu, double lambda)
 {
     // TODO would be nice to assert that x > 0 and lambda = 0
 
     double x_minus_mu = x - mu;
+    // using the definition from Wikipedia
     return sqrt(lambda / (2 * CUDART_PI * pow(x, 3.0))) * exp((-lambda * x_minus_mu * x_minus_mu) / (2 * mu * mu * x));
-    // http://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.stats.invgauss.html
-    // invgauss.pdf(x, mu) = 1 / sqrt(2*pi*x**3) * exp(-(x-mu)**2/(2*x*mu**2))
 }
 
 // x.prob <- dinvgauss(x_expanded, mean=mu_expanded, shape=lambda_expanded)  # N x M matrix
@@ -66,15 +64,20 @@ struct sum_term_functor
     }
 };
 
-void dump_array(const char *msg, thrust::device_vector<double>& array)
+void dump_array(const char *msg, thrust::device_vector<double>& array, int offset)
 {
     printf("%s: ", msg);
-    for (int i = 0; i < 4; i++)
+    for (int i = offset; i < offset + 4; i++)
     {
         printf("%lf ", (double)array[i]);
     }
 
     printf("\n");
+}
+
+void dump_array(const char *msg, thrust::device_vector<double>& array)
+{
+    dump_array(msg, array, 0);
 }
 
 void serial_thrust(double *dataset)
@@ -98,7 +101,9 @@ void serial_thrust(double *dataset)
     thrust::device_vector<double> dev_weighted_prob(M * N);
     thrust::device_vector<double> dev_sum_prob(N);
     thrust::device_vector<double> dev_member_prob(M * N);
-    thrust::device_vector<double> dev_member_prob_times_x(M * N);
+
+    // this would normally be an M * N array, but we only process N entries at a time and so reuse this space
+    thrust::device_vector<double> dev_member_prob_times_x(N);
     thrust::device_vector<double> dev_sum_term(M * N);
 
     thrust::host_vector<invgauss_params_t> params_new(M);
@@ -166,7 +171,7 @@ void serial_thrust(double *dataset)
             for (int m = 0; m < M; m++)
             {
                 thrust::transform(
-                    dev_weighted_prob.begin() + m * N, dev_weighted_prob.end() + m * N + N, // input 1
+                    dev_weighted_prob.begin() + m * N, dev_weighted_prob.begin() + m * N + N, // input 1
                     dev_sum_prob.begin(), // input 2
                     dev_member_prob.begin() + m * N, // output
                     thrust::divides<double>()); // operation
@@ -193,9 +198,9 @@ void serial_thrust(double *dataset)
                 // TODO: this could run outside the for loop, but easier to express in here
                 // calculate (x * member.prob)
                 thrust::transform(
-                    dev_chunk.begin() + vec_begin, dev_chunk.end() + vec_end, // input 1
+                    dev_chunk.begin() + vec_begin, dev_chunk.begin() + vec_end, // input 1
                     dev_member_prob.begin() + vec_begin, // input 2
-                    dev_member_prob_times_x.begin() + vec_begin, // output
+                    dev_member_prob_times_x.begin(), // output
                     thrust::multiplies<double>()); // operation
 
                 // calculate colSums
