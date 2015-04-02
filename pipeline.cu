@@ -52,8 +52,8 @@ void usage(char **argv)
 // simultaneous kernel executions supported on the Kepler architecture.
 // Adjusting this may or may not provide performance improvement; I'm guessing
 // that it's best to keep it near the device configuration.
-#define SIMULTANEOUS_KERNELS 32
-//#define SIMULTANEOUS_KERNELS 4
+// #define SIMULTANEOUS_KERNELS 32
+#define SIMULTANEOUS_KERNELS 4
 
 typedef struct _thread_args_t
 {
@@ -67,10 +67,6 @@ typedef struct _thread_args_t
     posterior_t *host_posterior; // 1:1 posterior probabilities for each observation
     control_t *host_controls; // controls stored on host
     int *current_chunk_id; // pointer to shared chunk_id counter
-
-    // CUDA launch params
-    int gridSize;
-    int blockSize;
 } thread_args_t;
 
 __host__ __device__ double old_dinvgauss(double x, double mu, double lambda)
@@ -289,8 +285,8 @@ int main(int argc, char **argv)
     */
 
     g_runcpu = 0;
-    g_runser = 1;
-    g_runpar = 0;
+    g_runser = 0;
+    g_runpar = 1;
 
     checkCudaErrors(cudaGetDeviceCount(&num_gpus));
 
@@ -353,18 +349,6 @@ int main(int argc, char **argv)
     printf("\n");
 
     // http://stackoverflow.com/a/25010560/591483
-    int blockSize;
-
-    // NOTE: update this - shared memory usage has changed
-    // assume one thread per observation
-    // FIXME re-add
-    // cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, (void *)inverse_gaussian_em_kernel, 0, N); 
-    // int gridSize = (N + blockSize - 1) / blockSize; 
-    // printf("gridSize=%d, blockSize=%d\n", gridSize, blockSize);
-    int gridSize = 2;
-    blockSize = 1024;
-
-    assert(blockSize == BLOCK_SIZE);
 
     if (g_runcpu)
     {
@@ -377,11 +361,97 @@ int main(int argc, char **argv)
 
     if (g_runser)
     {
-        serial_thrust(dataset);
+        /*
+        if (ep == EP_STREAM)
+        {
+            // TODO: check return value
+            cudaStreamCreate(&stream);
+            policy = thrust::cuda::par.on(stream);
+        }
+        else if (ep == EP_GPU)
+        {
+            policy = thrust::cuda::par;
+        }
+        else
+        {
+            policy = thrust::cpp::par;
+        }
+        */
+
+        // FIXME: this will definitely crash
+        serial_thrust(dataset, EP_STREAM, NULL);
     }
 
     if (g_runpar)
     {
+        // int32_t g_chunk_id = 0;
+
+        printf("Processing %d chunks simultaneously\n", SIMULTANEOUS_KERNELS);
+        // fire off 16-32 threads; that'll make the logic simpler for you
+
+/*
+        double *device_chunks[SIMULTANEOUS_KERNELS];
+        control_t *device_controls[SIMULTANEOUS_KERNELS];
+        posterior_t *device_posteriors[SIMULTANEOUS_KERNELS];
+        control_t host_controls[NUM_CHUNKS];
+        
+        for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
+        {
+            checkCudaErrors(cudaMalloc((void **)&(device_chunks[i]), CHUNK_BYTES));
+            checkCudaErrors(cudaMalloc((void **)&(device_controls[i]), CONTROL_BYTES));
+            checkCudaErrors(cudaMalloc((void **)&(device_posteriors[i]), POSTERIOR_CHUNK_BYTES));
+        }
+        */
+
+        pthread_t threads[SIMULTANEOUS_KERNELS];
+        thread_args_t args[SIMULTANEOUS_KERNELS];
+
+        int32_t current_chunk_id = 0;
+
+        gettimeofday(&start_time, 0);
+
+        // launch threads
+        for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
+        {
+            // set up arguments
+            args[i].thread_id = i;
+            // args[i].device_chunk = device_chunks[i];
+            // args[i].device_posterior = device_posteriors[i];
+            // args[i].device_control = device_controls[i];
+            args[i].current_chunk_id = &current_chunk_id;
+            args[i].host_dataset = dataset;
+            // args[i].host_controls = host_controls;
+            // args[i].host_posterior = posterior;
+            int rc = pthread_create(&threads[i], NULL, thread, (void *)&args[i]);
+            assert(rc == 0);
+        }
+
+        // join threads
+        for (unsigned i = 0; i < SIMULTANEOUS_KERNELS; i++)
+        {
+            pthread_join(threads[i], NULL);
+        }
+
+        gettimeofday(&end_time, 0);
+        printf("Processed %i chunks\n", NUM_CHUNKS);
+
+        printf("cuda parallel: ");
+        print_time_elapsed(start_time, end_time);
+        
+#if 0
+        for (unsigned i = 0; i < 4; i++)
+        {
+            // printf("cuda parallel: chunk %d sum is %f\n", i, host_controls[i].sum);
+            // FIXME: hardcoded component numbers
+            printf("cuda parallel: posterior %d is %f %f\n", i, posterior[i].component[0], posterior[i].component[1]);
+        }
+#endif
+
+        //cudaFree(device_chunk);
+        //cudaFree(device_control);
+    }
+#if 0
+old version
         int32_t current_chunk_id = 0;
 
         printf("Processing %d chunks simultaneously\n", SIMULTANEOUS_KERNELS);
@@ -416,8 +486,6 @@ int main(int argc, char **argv)
             args[i].host_dataset = dataset;
             args[i].host_controls = host_controls;
             args[i].host_posterior = posterior;
-            args[i].gridSize = gridSize;
-            args[i].blockSize = blockSize;
 
             int rc = pthread_create(&threads[i], NULL, thread, (void *)&args[i]);
             assert(rc == 0);
@@ -445,9 +513,57 @@ int main(int argc, char **argv)
         //cudaFree(device_chunk);
         //cudaFree(device_control);
     }
+#endif
 }
 
 void *thread(void *void_args)
+{
+    thread_args_t *args = (thread_args_t *)void_args;
+    // cudaStream_t stream;
+
+    // cudaSetDevice(0); // TODO: adjust when we have multiple GPUs; probably assign a new group of threads to each GPU
+
+    // checkCudaErrors(cudaStreamCreate(&stream));
+
+    // int32_t chunk_id = OSAtomicIncrement32(args->current_chunk_id);
+    // TODO: I'm not convinced that this is working. 
+    // TODO: we're definitely missing chunk 0; so bodge around it here
+    // chunk_id--;
+
+    // while (chunk_id < NUM_CHUNKS)
+    {
+        // double *host_chunk_ptr = &args->host_dataset[chunk_id * CHUNK_ENTRIES];
+        // posterior_t *host_posterior_ptr = &args->host_posterior[chunk_id * CHUNK_ENTRIES];
+
+        // printf("thread %d chunk %d host_ptr %p\n", args->thread_id, chunk_id, host_chunk_ptr);
+
+        // cudaMemcpyAsync(args->device_chunk, host_chunk_ptr, CHUNK_BYTES, cudaMemcpyHostToDevice, stream);
+        // cudaStreamSynchronize(stream);
+
+        // do work on gpu
+        serial_thrust(args->host_dataset, EP_STREAM, args->current_chunk_id);
+
+        // These small copies are relatively inefficient. Computation time dominates, however, so it hardly matters.
+        // cudaMemcpyAsync(&(args->host_controls[chunk_id]), args->device_control, sizeof(control_t), cudaMemcpyDeviceToHost, stream);
+        // TODO: check that you can fire off two copies like this without synchronizing
+        // cudaMemcpyAsync(host_posterior_ptr, args->device_posterior, POSTERIOR_CHUNK_BYTES, cudaMemcpyDeviceToHost, stream);
+        // cudaStreamSynchronize(stream);
+
+        // TODO check return value
+
+        // printf("chunk %d complete\n", chunk_id);
+
+        // FIXME BODGE
+        // chunk_id = OSAtomicIncrement32(args->current_chunk_id);
+        // chunk_id--;
+    }
+
+    printf("thread %d complete\n", args->thread_id);
+    return 0;
+}
+
+#if 0
+void *old_thread(void *void_args)
 {
     thread_args_t *args = (thread_args_t *)void_args;
     cudaStream_t stream;
@@ -493,5 +609,6 @@ void *thread(void *void_args)
     printf("thread %d complete\n", args->thread_id);
     return 0;
 }
+#endif
 
 

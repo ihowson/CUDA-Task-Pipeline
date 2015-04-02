@@ -35,6 +35,7 @@
 
 # Location of the CUDA Toolkit
 CUDA_PATH       ?= /Developer/NVIDIA/CUDA-6.5
+#CUDA_PATH       ?= /Developer/NVIDIA/CUDA-7.0
 
 OSUPPER = $(shell uname -s 2>/dev/null | tr "[:lower:]" "[:upper:]")
 OSLOWER = $(shell uname -s 2>/dev/null | tr "[:upper:]" "[:lower:]")
@@ -86,9 +87,11 @@ CCFLAGS     :=
 LDFLAGS     :=
 
 # Extra user flags
-EXTRA_NVCCFLAGS   ?=
+#EXTRA_NVCCFLAGS   ?= --default-stream
+EXTRA_NVCCFLAGS   ?= 
 EXTRA_LDFLAGS     ?=
-EXTRA_CCFLAGS     ?=
+EXTRA_CCFLAGS     ?= 
+#EXTRA_CCFLAGS     ?= -fsanitize=bounds -fsanitize-undefined-trap-on-error -fstack-protector
 
 # OS-specific build flags
 ifneq ($(DARWIN),)

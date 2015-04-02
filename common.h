@@ -54,9 +54,13 @@ typedef struct _invgauss_control_t
 
 typedef invgauss_control_t control_t;
 
+enum execution_policy {
+    EP_CPU, // run on CPU
+    EP_GPU, // run on GPU on default stream
+    EP_STREAM // run on GPU and allocate yourself a new stream
+};
 
-extern void serial_thrust(double *dataset);
+extern void serial_thrust(double *dataset, execution_policy policy, int32_t *g_chunk_id);
 // extern __device__ double dinvgauss(double x, double mu, double lambda);
-
 
 #endif /* COMMON_H */
