@@ -53,7 +53,7 @@ void usage(char **argv)
 // Adjusting this may or may not provide performance improvement; I'm guessing
 // that it's best to keep it near the device configuration.
 // #define SIMULTANEOUS_KERNELS 32
-#define SIMULTANEOUS_KERNELS 4
+#define SIMULTANEOUS_KERNELS 1
 
 typedef struct _thread_args_t
 {
@@ -379,7 +379,7 @@ int main(int argc, char **argv)
         */
 
         // FIXME: this will definitely crash
-        serial_thrust(dataset, EP_STREAM, NULL);
+        stream(dataset, NULL);
     }
 
     if (g_runpar)
@@ -541,7 +541,7 @@ void *thread(void *void_args)
         // cudaStreamSynchronize(stream);
 
         // do work on gpu
-        serial_thrust(args->host_dataset, EP_STREAM, args->current_chunk_id);
+        stream(args->host_dataset, args->current_chunk_id);
 
         // These small copies are relatively inefficient. Computation time dominates, however, so it hardly matters.
         // cudaMemcpyAsync(&(args->host_controls[chunk_id]), args->device_control, sizeof(control_t), cudaMemcpyDeviceToHost, stream);

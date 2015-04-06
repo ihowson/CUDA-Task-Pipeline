@@ -147,7 +147,7 @@ ALL_LDFLAGS += $(addprefix -Xlinker ,$(LDFLAGS))
 ALL_LDFLAGS += $(addprefix -Xlinker ,$(EXTRA_LDFLAGS))
 
 # Common includes and paths for CUDA
-INCLUDES  := -Ithrust
+INCLUDES  := -Icub
 LIBRARIES :=
 
 ################################################################################
@@ -198,14 +198,13 @@ endif
 pipeline.o:pipeline.cu
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
-serial_thrust.o:serial_thrust.cu
+stream.o:stream.cu
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
 # dinvgauss.o:dinvgauss.cu
 	# $(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
-# pipeline: pipeline.o serial_thrust.o dinvgauss.o
-pipeline: pipeline.o serial_thrust.o
+pipeline: pipeline.o stream.o
 	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
 	$(EXEC) mkdir -p ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
 	$(EXEC) cp $@ ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
@@ -214,7 +213,7 @@ run: build
 	$(EXEC) ./pipeline
 
 clean:
-	rm -f pipeline pipeline.o serial_thrust.o dinvgauss.o
+	rm -f pipeline pipeline.o stream.o dinvgauss.o
 	rm -rf ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))/pipeline
 
 clobber: clean

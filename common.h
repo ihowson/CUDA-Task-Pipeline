@@ -60,7 +60,7 @@ enum execution_policy {
     EP_STREAM // run on GPU and allocate yourself a new stream
 };
 
-extern void serial_thrust(double *dataset, execution_policy policy, int32_t *g_chunk_id);
+extern void stream(double *dataset, int32_t *g_chunk_id);
 // extern __device__ double dinvgauss(double x, double mu, double lambda);
 
 #endif /* COMMON_H */

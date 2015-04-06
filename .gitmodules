@@ -2,3 +2,7 @@
 	path = thrust
 	url = https://github.com/thrust/thrust.git
 	branch = 1.8.1
+[submodule "cub"]
+	path = cub
+	url = git@github.com:NVlabs/cub.git
+	branch = 1.4.0
