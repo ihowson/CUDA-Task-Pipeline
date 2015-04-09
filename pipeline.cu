@@ -53,7 +53,7 @@ void usage(char **argv)
 // Adjusting this may or may not provide performance improvement; I'm guessing
 // that it's best to keep it near the device configuration.
 // #define SIMULTANEOUS_KERNELS 32
-#define SIMULTANEOUS_KERNELS 1
+#define SIMULTANEOUS_KERNELS 4
 
 typedef struct _thread_args_t
 {

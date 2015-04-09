@@ -43,7 +43,8 @@ __global__ void member_prob_kernel(
     const invgauss_params_t *g_params,
     double *g_member_prob,
     double *g_x_times_member_prob,
-    double *g_lambda_sum_arg)
+    double *g_lambda_sum_arg,
+    double *g_log_sum_prob)
 {
     // g_chunk: 1xN input
     // g_params: 1xM input
@@ -61,7 +62,8 @@ __global__ void member_prob_kernel(
 
     if (t >= N)
     {
-        // The recommended grid/block sizes often launch more kernels than we have data for. Don't do anything if this is an excess kernel.
+        // The recommended grid/block sizes often launch more kernels than we
+        // have data for. Don't do anything if this is an excess kernel.
         return;
     }
 
@@ -69,14 +71,17 @@ __global__ void member_prob_kernel(
     double sum_prob = 0.0f;
     double x = g_chunk[t];
 
-    // printf("t = %d\n", t);
-
+    #pragma unroll
     for (int m = 0; m < M; m++)
     {
         weighted_prob[m] = g_params[m].alpha * dinvgauss(x, g_params[m].mu, g_params[m].lambda);
         sum_prob += weighted_prob[m];
     }
 
+    // used for convergence check; this is log(rowSums(alpha_expanded * x.prob)))
+    g_log_sum_prob[t] = log(sum_prob);
+
+    #pragma unroll
     for (int m = 0; m < M; m++)
     {
         unsigned index = m * N + t;
@@ -141,14 +146,19 @@ void stream(double *dataset, int32_t *g_chunk_id)
     // Round up according to array size 
     gridSize = (N + blockSize - 1) / blockSize; 
 
+
+// gridSize = 16;
+// blockSize = 128;
     printf("using blockSize=%d gridSize=%d\n", blockSize, gridSize);
 
     invgauss_params_t *params_new;
-    invgauss_params_t *start_params;
-    igresults *host_igresults;
     checkCudaErrors(cudaMallocHost(&params_new, sizeof(invgauss_params_t) * M));
+    invgauss_params_t *start_params;
     checkCudaErrors(cudaMallocHost(&start_params, sizeof(invgauss_params_t) * M));
+    igresults *host_igresults;
     checkCudaErrors(cudaMallocHost(&host_igresults, sizeof(igresults)));
+    double *host_loglik;
+    checkCudaErrors(cudaMallocHost(&host_loglik, sizeof(double)));
 
     cudaStream_t stream;
     // cudaSetDevice(0); // TODO: adjust when we have multiple GPUs; probably assign a new group of threads to each GPU
@@ -174,8 +184,11 @@ void stream(double *dataset, int32_t *g_chunk_id)
     double *dev_lambda_sum_arg;
     checkCudaErrors(cudaMalloc(&dev_lambda_sum_arg, sizeof(double) * M * N));
 
-    // double *dev_member_prob_sum;
-    // checkCudaErrors(cudaMalloc(&dev_member_prob_sum, sizeof(double)));
+    double *dev_log_sum_prob;
+    checkCudaErrors(cudaMalloc(&dev_log_sum_prob, sizeof(double) * N));
+
+    double *dev_loglik;
+    checkCudaErrors(cudaMalloc(&dev_loglik, sizeof(double)));
 
     // temp storage for reductions
     // we pretty much only do a sum reduction across N, so this ought to persist for the lifetime of the thread
@@ -194,19 +207,6 @@ void stream(double *dataset, int32_t *g_chunk_id)
     //   datasets to run and the infrastructure to run tasks in parallel, which
     //   covers up many sins.
 
-    /*
-    thrust::device_vector<double> dev_x_prob(M * N);
-    thrust::device_vector<double> dev_weighted_prob(M * N);
-    thrust::device_vector<double> dev_sum_prob(N);
-    thrust::device_vector<double> dev_member_prob(M * N);
-    */
-
-    // this would normally be an M * N array, but we only process N entries at a time and so reuse this space
-    /*
-    thrust::device_vector<double> dev_member_prob_times_x(N);
-    thrust::device_vector<double> dev_sum_term(M * N);
-    */
-
     // set up initial parameters
     for (unsigned m = 0; m < M; m++)
     {
@@ -216,6 +216,14 @@ void stream(double *dataset, int32_t *g_chunk_id)
     }
 
     // FIXME FIXME: we're getting a crash on the last 8; presumably we have an out-of-range memory access
+
+    // Sum reductions require some temporary storage. We always do sums over N
+    // elements of type 'double', so we assume that the storage requirement is
+    // always the same and do the malloc once here.
+    // If we pass in NULL for needed_bytes, we get back the required size
+    cub::DeviceReduce::Sum(dev_temp, temp_size, dev_member_prob, &dev_igresults->member_prob_sum, N, stream);
+    printf("malloc dev_temp to %zd bytes\n", temp_size);
+    checkCudaErrors(cudaMalloc(&dev_temp, temp_size));
 
     int32_t chunk_id = OSAtomicIncrement32(g_chunk_id);
     // TODO: I'm not convinced that this is working.
@@ -236,10 +244,16 @@ void stream(double *dataset, int32_t *g_chunk_id)
         double *chunk_host_ptr = &dataset[chunk_id * CHUNK_ENTRIES];
         checkCudaErrors(cudaMemcpyAsync(dev_chunk, chunk_host_ptr, CHUNK_BYTES, cudaMemcpyHostToDevice, stream));
 
+        bool converged = false;
+        bool failed = false;
+        double old_loglik = -INFINITY;
+        double epsilon = 0.000001;
+
         // run EM algorithm
         unsigned iteration = 0; // FIXME: nasty. Better to explicitly count.
-        for (; iteration < MAX_ITERATIONS; iteration++)
+        while (converged == false && failed == false && iteration < MAX_ITERATIONS)
         {
+            iteration++;
             checkCudaErrors(cudaMemcpyAsync(dev_params, params_new, sizeof(invgauss_params_t) * M, cudaMemcpyHostToDevice, stream));
             checkCudaErrors(cudaStreamSynchronize(stream));
 
@@ -255,35 +269,43 @@ void stream(double *dataset, int32_t *g_chunk_id)
             // parameters that can be calculated in one pass. We do them all
             // here to minimise kernel launch overhead. This does make the
             // program flow a bit confusing.
-            member_prob_kernel<<<gridSize, blockSize, 0, stream>>>(dev_chunk, dev_params, dev_member_prob, dev_x_times_member_prob, dev_lambda_sum_arg);
+            member_prob_kernel<<<gridSize, blockSize, 0, stream>>>(dev_chunk, dev_params, dev_member_prob, dev_x_times_member_prob, dev_lambda_sum_arg, dev_log_sum_prob);
             // The remaining operations are all summations over various
             // outputs from this kernel.
 
             checkCudaErrors(cudaStreamSynchronize(stream));
 
+            // have we converged?
+            // TODO(perf): we could probably save some time by only doing this check once every few iterations - it's slow relative to the rest of the iteration time
+            // log.lik <- sum(log(rowSums(alpha_expanded * x.prob)))
+            cub::DeviceReduce::Sum(dev_temp, temp_size, dev_log_sum_prob, dev_loglik, N, stream);
+            // copy new log-likelihood back
+            checkCudaErrors(cudaMemcpyAsync(host_loglik, dev_loglik, sizeof(double), cudaMemcpyDeviceToHost, stream));
+            checkCudaErrors(cudaStreamSynchronize(stream)); // wait for copy to complete
+
+            // printf("old ll = %lf, new ll = %lf\n", old_loglik, *host_loglik);
+
+            if (old_loglik > *host_loglik)
+            {
+                // we're going backwards
+                printf("FAILED TO CONVERGE. Giving up.\n");
+                failed = true;
+                break;
+            }
+
+            double diff = *host_loglik - old_loglik;
+            if (diff < epsilon) {
+                converged = true;
+                break;
+            }
+
+            // didn't converge, continue optimising
+
             // member.prob.sum <- colSums(member.prob)
             for (int m = 0; m < M; m++)
             {
                 // TODO(perf): the components are independent, so we could sum them in parallel
-
-                // TODO: how does this know what the data type size is?
-                // TODO: move this outside the loop
-                size_t needed_bytes;
-                cub::DeviceReduce::Sum(dev_temp, needed_bytes, dev_member_prob + m * N, &dev_igresults->member_prob_sum, N, stream);
-                if (needed_bytes > temp_size)
-                {
-                    if (dev_temp)
-                    {
-                        printf("free dev_temp\n");
-                        checkCudaErrors(cudaFree(dev_temp));
-                    }
-                    temp_size = needed_bytes;
-                    printf("malloc dev_temp to %zd bytes\n", needed_bytes);
-                    checkCudaErrors(cudaMalloc(&dev_temp, temp_size));
-                }
-
                 cub::DeviceReduce::Sum(dev_temp, temp_size, dev_member_prob + m * N, &dev_igresults->member_prob_sum, N, stream);
-            // checkCudaErrors(cudaStreamSynchronize(stream));
 
                 // dump_dev_array("dev_member_prob", dev_member_prob + m * N);
                 // dump_dev_array("dev_member_prob end", dev_member_prob + m * N + N - 4);
@@ -294,11 +316,9 @@ void stream(double *dataset, int32_t *g_chunk_id)
                 // perform the sum
                 // TODO check that the dev_temp size is still suitable
                 cub::DeviceReduce::Sum(dev_temp, temp_size, dev_x_times_member_prob + m * N, &dev_igresults->xmp_sum, N, stream);
-            // checkCudaErrors(cudaStreamSynchronize(stream));
 
                 // do the colSums for lambda
                 cub::DeviceReduce::Sum(dev_temp, temp_size, dev_lambda_sum_arg + m * N, &dev_igresults->lambda_sum, N, stream);
-            // checkCudaErrors(cudaStreamSynchronize(stream));
 
                 // determine new parameters
                 checkCudaErrors(cudaMemcpyAsync(host_igresults, dev_igresults, sizeof(igresults), cudaMemcpyDeviceToHost, stream));
@@ -311,7 +331,6 @@ void stream(double *dataset, int32_t *g_chunk_id)
                 params_new[m].alpha = host_igresults->member_prob_sum / N;
                 params_new[m].mu = host_igresults->xmp_sum / host_igresults->member_prob_sum;
                 params_new[m].lambda = host_igresults->member_prob_sum / host_igresults->lambda_sum;
-
             }
 
             // check for parameter sanity
@@ -333,9 +352,11 @@ void stream(double *dataset, int32_t *g_chunk_id)
                 printf("\tcomp %d alpha=%lf mu=%lf lambda=%lf\n", m, p->alpha, p->mu, p->lambda);
             }
             */
+            old_loglik = *host_loglik;
         }
 
-        printf("thread %p fit chunk %d\n", pthread_self(), chunk_id);
+        // Disabling this gains about .5 seconds on a 5 second run
+        printf("thread %p fit chunk %d after %d iterations\n", pthread_self(), chunk_id, iteration);
         for (int m = 0; m < M; m++)
         {
             invgauss_params_t *p = &params_new[m];
