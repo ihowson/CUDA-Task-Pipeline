@@ -163,6 +163,7 @@ void stream(double *dataset, int32_t *g_chunk_id)
     cudaStream_t stream;
     // cudaSetDevice(0); // TODO: adjust when we have multiple GPUs; probably assign a new group of threads to each GPU
     checkCudaErrors(cudaStreamCreate(&stream));
+    checkCudaErrors(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
     // persistent device memory
     // allocated out here to avoid cudaMalloc in main loop
@@ -255,7 +256,7 @@ void stream(double *dataset, int32_t *g_chunk_id)
         {
             iteration++;
             checkCudaErrors(cudaMemcpyAsync(dev_params, params_new, sizeof(invgauss_params_t) * M, cudaMemcpyHostToDevice, stream));
-            checkCudaErrors(cudaStreamSynchronize(stream));
+            // checkCudaErrors(cudaStreamSynchronize(stream));
 
             //////// PROCESS CHUNK
 
@@ -273,7 +274,7 @@ void stream(double *dataset, int32_t *g_chunk_id)
             // The remaining operations are all summations over various
             // outputs from this kernel.
 
-            checkCudaErrors(cudaStreamSynchronize(stream));
+            // checkCudaErrors(cudaStreamSynchronize(stream));
 
             // have we converged?
             // TODO(perf): we could probably save some time by only doing this check once every few iterations - it's slow relative to the rest of the iteration time
@@ -356,12 +357,14 @@ void stream(double *dataset, int32_t *g_chunk_id)
         }
 
         // Disabling this gains about .5 seconds on a 5 second run
+        /*
         printf("thread %p fit chunk %d after %d iterations\n", pthread_self(), chunk_id, iteration);
         for (int m = 0; m < M; m++)
         {
             invgauss_params_t *p = &params_new[m];
             printf("\tcomp %d alpha=%lf mu=%lf lambda=%lf\n", m, p->alpha, p->mu, p->lambda);
         }
+        */
 
         // FIXME BODGE
         chunk_id = OSAtomicIncrement32(g_chunk_id);
