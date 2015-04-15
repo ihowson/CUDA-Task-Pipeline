@@ -34,8 +34,12 @@
 ################################################################################
 
 # Location of the CUDA Toolkit
-CUDA_PATH       ?= /Developer/NVIDIA/CUDA-6.5
-#CUDA_PATH       ?= /Developer/NVIDIA/CUDA-7.0
+
+ifneq ($(DARWIN),)
+	CUDA_PATH       ?= /Developer/NVIDIA/CUDA-7.0
+else
+	CUDA_PATH       ?= /opt/nvidia/cuda
+endif
 
 OSUPPER = $(shell uname -s 2>/dev/null | tr "[:lower:]" "[:upper:]")
 OSLOWER = $(shell uname -s 2>/dev/null | tr "[:upper:]" "[:lower:]")
@@ -130,6 +134,7 @@ endif
 # Debug build flags
 ifeq ($(dbg),1)
       NVCCFLAGS += -g -G
+      CCFLAGS += -g
       TARGET := debug
 else
       TARGET := release
@@ -195,6 +200,9 @@ else
 	@echo "Sample is ready - all dependencies have been met"
 endif
 
+chunk.o:chunk.cpp
+	$(EXEC) $(GCC) $(INCLUDES) -std=c++11 $(ALL_CCFLAGS) -o $@ -c $<
+
 pipeline.o:pipeline.cu
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
@@ -204,16 +212,16 @@ stream.o:stream.cu
 # dinvgauss.o:dinvgauss.cu
 	# $(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
-pipeline: pipeline.o stream.o
+pipeline: pipeline.o stream.o chunk.o
 	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
-	$(EXEC) mkdir -p ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
-	$(EXEC) cp $@ ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
+	#$(EXEC) mkdir -p ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
+	#$(EXEC) cp $@ ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
 
 run: build
 	$(EXEC) ./pipeline
 
 clean:
-	rm -f pipeline pipeline.o stream.o dinvgauss.o
-	rm -rf ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))/pipeline
+	rm -f pipeline pipeline.o stream.o dinvgauss.o chunk.o
+	#rm -rf ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))/pipeline
 
 clobber: clean

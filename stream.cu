@@ -4,23 +4,17 @@
 #define CUB_STDERR
 
 #include <pthread.h>
-
 #include <cuda_runtime.h>
-
 #include <math.h>
-
-// NOTE: OS X only
-#include <libkern/OSAtomic.h>
-
 #include <math_constants.h>
 #include <iostream>
 
 #include <cub/cub.cuh>
 
+#include "chunk.h"
+#include "common.h"
 // TODO: this is only used for checkCudaErrors - try to remove it
 #include "helper_cuda.h"
-
-#include "common.h"
 
 
 __host__ __device__ double dinvgauss(double x, double mu, double lambda)
@@ -226,11 +220,7 @@ void stream(double *dataset, int32_t *g_chunk_id)
     printf("malloc dev_temp to %zd bytes\n", temp_size);
     checkCudaErrors(cudaMalloc(&dev_temp, temp_size));
 
-    int32_t chunk_id = OSAtomicIncrement32(g_chunk_id);
-    // TODO: I'm not convinced that this is working.
-    // TODO: we're definitely missing chunk 0, so bodge around it here
-    chunk_id--;
-
+    unsigned chunk_id = chunk_get();
     while (chunk_id < NUM_CHUNKS)
     {
         // printf("thread %p chunk %d\n", pthread_self(), chunk_id);
@@ -366,8 +356,6 @@ void stream(double *dataset, int32_t *g_chunk_id)
         }
         */
 
-        // FIXME BODGE
-        chunk_id = OSAtomicIncrement32(g_chunk_id);
-        chunk_id--;
+        chunk_id = chunk_get();
     }
 }

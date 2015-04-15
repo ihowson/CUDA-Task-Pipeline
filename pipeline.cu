@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <errno.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -13,7 +14,14 @@
 
 // This is OS X specific, unfortunately; haven't found a good cross-platform way to do this
 // C++ <atomic> doesn't work on Mac for whatever reason
+#ifdef DARWIN
 #include <libkern/OSAtomic.h>
+#else
+//#include <atomic>
+//#include <stdatomic.h>
+//#include <glib.h>
+//#include <linux/arch/arm64/include/asm/atomic.h>
+#endif
 
 // consider electricfence
 // http://lh3lh3.users.sourceforge.net/memdebug.shtml
@@ -288,6 +296,7 @@ int main(int argc, char **argv)
     g_runser = 0;
     g_runpar = 1;
 
+    printf("If this fails, make sure you're running as root (on Linux)\n");
     checkCudaErrors(cudaGetDeviceCount(&num_gpus));
 
     assert(num_gpus == 1); // don't know what to do with multiple GPUs yet
@@ -317,6 +326,12 @@ int main(int argc, char **argv)
     {
         printf(".");
         FILE *f = fopen("test.data", "r");
+
+        if (f == NULL)
+        {
+            printf("Couldn't open file (errno = %d)\n", errno);
+            return 1;
+        }
 
         for (unsigned data_index = 0; data_index < N; data_index++)
         {
