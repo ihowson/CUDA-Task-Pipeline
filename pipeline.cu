@@ -60,8 +60,11 @@ void usage(char **argv)
 // simultaneous kernel executions supported on the Kepler architecture.
 // Adjusting this may or may not provide performance improvement; I'm guessing
 // that it's best to keep it near the device configuration.
-// #define SIMULTANEOUS_KERNELS 32
-#define SIMULTANEOUS_KERNELS 4
+#define SIMULTANEOUS_KERNELS 32
+// #define SIMULTANEOUS_KERNELS 16
+// 8 ran in 1.3 seconds
+// 16 in 1.14 seconds
+// 32 in 1.11 seconds
 
 typedef struct _thread_args_t
 {
@@ -312,13 +315,12 @@ int main(int argc, char **argv)
     // OOM killed)
     // pinned RAM is a requirement for CUDA stream concurrency
     double *dataset;
+    printf("dataset is %lu bytes\n", DATASET_BYTES);
     checkCudaErrors(cudaMallocHost(&dataset, DATASET_BYTES));
 
     // for each input observation, we generate a posterior probability
     posterior_t *posterior;
     checkCudaErrors(cudaMallocHost(&posterior, ALL_POSTERIOR_BYTES));
-
-    printf("dataset is %lu bytes\n", DATASET_BYTES);
 
     printf("Loading test data...");
     // for now, we just load one chunk and repeat it across the entire dataset
