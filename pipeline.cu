@@ -60,11 +60,17 @@ void usage(char **argv)
 // simultaneous kernel executions supported on the Kepler architecture.
 // Adjusting this may or may not provide performance improvement; I'm guessing
 // that it's best to keep it near the device configuration.
-#define SIMULTANEOUS_KERNELS 32
-// #define SIMULTANEOUS_KERNELS 16
+#define SIMULTANEOUS_KERNELS 8
+// pre-fuse
 // 8 ran in 1.3 seconds
 // 16 in 1.14 seconds
 // 32 in 1.11 seconds
+
+// post-fuse
+// 4 ran in 1.01 seconds
+// 8 ran in 0.82 seconds
+// 16 ran in 0.75 seconds
+// 32 in 0.745 seconds
 
 typedef struct _thread_args_t
 {

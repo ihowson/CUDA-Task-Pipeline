@@ -266,22 +266,11 @@ void stream(double *dataset, int32_t *g_chunk_id)
             // The remaining operations are all summations over various
             // outputs from this kernel.
 
-            // checkCudaErrors(cudaStreamSynchronize(stream));
-
             // have we converged?
             // TODO(perf): we could probably save some time by only doing this check once every few iterations - it's slow relative to the rest of the iteration time
             // log.lik <- sum(log(rowSums(alpha_expanded * x.prob)))
-            // cub::DeviceReduce::Sum(dev_temp, temp_size, dev_log_sum_prob, dev_loglik, N, stream);
-lp_sum_kernel<<<1, LP_SUM_BLOCK_SIZE, LP_SUM_BLOCK_SIZE * sizeof(double), stream>>>(dev_log_sum_prob, dev_loglik, N);
+            lp_sum_kernel<<<1, LP_SUM_BLOCK_SIZE, LP_SUM_BLOCK_SIZE * sizeof(double), stream>>>(dev_log_sum_prob, dev_loglik, N);
 
-
-// dump_dev_value("cub member_prob_sum", dev_loglik, stream);
-
-// checkCudaErrors(cudaStreamSynchronize(stream)); // wait for copy to complete
-// dump_dev_value("lp_sum xmp_sum", dev_loglik, stream);
-
-// return;
-// abort();
             // copy new log-likelihood back
             checkCudaErrors(cudaMemcpyAsync(host_loglik, dev_loglik, sizeof(double), cudaMemcpyDeviceToHost, stream));
             checkCudaErrors(cudaStreamSynchronize(stream)); // wait for copy to complete
@@ -304,36 +293,32 @@ lp_sum_kernel<<<1, LP_SUM_BLOCK_SIZE, LP_SUM_BLOCK_SIZE * sizeof(double), stream
 
             // didn't converge, continue optimising
 
-            // member.prob.sum <- colSums(member.prob)
             for (int m = 0; m < M; m++)
             {
-                // TODO(perf): the components are independent, so we could sum them in parallel
-                // cub::DeviceReduce::Sum(dev_temp, temp_size, dev_member_prob + m * N, &dev_igresults->member_prob_sum, N, stream);
-lp_sum_kernel<<<1, LP_SUM_BLOCK_SIZE, LP_SUM_BLOCK_SIZE * sizeof(double), stream>>>(dev_member_prob + m * N, &dev_igresults->member_prob_sum, N);
+                // set up inputs to fused_kernel
+                // this is similar to the command buffer to a DMA engine
+                commands c;
+                c.input[0] = dev_member_prob + m * N;
+                c.output[0] = &dev_igresults->member_prob_sum;
 
-                // dump_dev_array("dev_member_prob", dev_member_prob + m * N);
-                // dump_dev_array("dev_member_prob end", dev_member_prob + m * N + N - 4);
-                // dump_dev_value("member_prob_sum", &dev_igresults->member_prob_sum);
+                c.input[1] = dev_x_times_member_prob + m * N;
+                c.output[1] = &dev_igresults->xmp_sum;;
 
-                // mu.new <- colSums(x * member.prob) / member.prob.sum  # should be 1x2 matrix
-                // x * member.prob was calculated earlier into dev_x_times_member_prob
-                // perform the sum
-                // TODO check that the dev_temp size is still suitable
-                // cub::DeviceReduce::Sum(dev_temp, temp_size, dev_x_times_member_prob + m * N, &dev_igresults->xmp_sum, N, stream);
-lp_sum_kernel<<<1, LP_SUM_BLOCK_SIZE, LP_SUM_BLOCK_SIZE * sizeof(double), stream>>>(dev_x_times_member_prob + m * N, &dev_igresults->xmp_sum, N);
+                c.input[2] = dev_lambda_sum_arg + m * N;
+                c.output[2] = &dev_igresults->lambda_sum;
 
-                // do the colSums for lambda
-                // cub::DeviceReduce::Sum(dev_temp, temp_size, dev_lambda_sum_arg + m * N, &dev_igresults->lambda_sum, N, stream);
-lp_sum_kernel<<<1, LP_SUM_BLOCK_SIZE, LP_SUM_BLOCK_SIZE * sizeof(double), stream>>>(dev_lambda_sum_arg + m * N, &dev_igresults->lambda_sum, N);
+                c.num_commands = 3;
+
+                // TODO(perf): the components are independent, so we could sum them from one kernel launch
+                // BLECH: we pass this all in through arguments. It would be nicer to pass input/output pairs but this would incur another host-to-device memcpy
+                lp_fused_sum_kernel<<<1, LP_SUM_BLOCK_SIZE, LP_SUM_BLOCK_SIZE * sizeof(double), stream>>>(c, N);
 
                 // determine new parameters
                 checkCudaErrors(cudaMemcpyAsync(host_igresults, dev_igresults, sizeof(igresults), cudaMemcpyDeviceToHost, stream));
                 checkCudaErrors(cudaStreamSynchronize(stream)); // wait for copy to complete
 
-                // FIXME: sum here is grossly wrong
-                // printf("thread %p iter %d comp %d, sum is %lf\n", pthread_self(), iteration, m, host_igresults->member_prob_sum);
-
-                // alpha.new <- member.prob.sum / N  # should be 1x2 matrix
+                // TODO(perf): you could move this out of the loop and run 6 sums from one kernel launch
+                // it would also help to fuse all of the igresults together to save another memcpy
                 params_new[m].alpha = host_igresults->member_prob_sum / N;
                 params_new[m].mu = host_igresults->xmp_sum / host_igresults->member_prob_sum;
                 params_new[m].lambda = host_igresults->member_prob_sum / host_igresults->lambda_sum;

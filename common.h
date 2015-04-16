@@ -14,7 +14,7 @@
 
 // FIXME: 40kchunks is taking too long right now
 // #define NUM_CHUNKS 40000
-#define NUM_CHUNKS 300
+#define NUM_CHUNKS 1000
 #define CHUNK_ENTRIES 2000
 
 #define CHUNK_BYTES (CHUNK_ENTRIES * sizeof(double))

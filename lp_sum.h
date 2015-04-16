@@ -3,8 +3,18 @@
 
 // always launch this many threads per block
 // 64 seems to be the minimum
-#define LP_SUM_BLOCK_SIZE 64
+// As we increase this, phase 2 time will increase but phase 1 will decrease. Until proper recursive sum reduction is implemented, this will require some tweaking.
+#define LP_SUM_BLOCK_SIZE 128
+
+// FIXME: give this a better name
+typedef struct _commands
+{
+    unsigned num_commands;
+    double *input[3];
+    double *output[3];
+} commands;
 
 __global__ void lp_sum_kernel(const double *g_input, double *g_sum, unsigned n);
+__global__ void lp_fused_sum_kernel(commands c, unsigned n);
 
 #endif /* LP_SUM_H */
