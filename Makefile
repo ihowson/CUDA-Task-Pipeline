@@ -33,13 +33,6 @@
 #
 ################################################################################
 
-# Location of the CUDA Toolkit
-
-ifneq ($(DARWIN),)
-	CUDA_PATH       ?= /Developer/NVIDIA/CUDA-7.0
-else
-	CUDA_PATH       ?= /opt/nvidia/cuda
-endif
 
 OSUPPER = $(shell uname -s 2>/dev/null | tr "[:lower:]" "[:upper:]")
 OSLOWER = $(shell uname -s 2>/dev/null | tr "[:upper:]" "[:lower:]")
@@ -49,6 +42,14 @@ OS_ARCH    = $(shell uname -m)
 ARCH_FLAGS =
 
 DARWIN = $(strip $(findstring DARWIN, $(OSUPPER)))
+
+# Location of the CUDA Toolkit
+ifneq ($(DARWIN),)
+	CUDA_PATH       ?= /Developer/NVIDIA/CUDA-7.0
+else
+	CUDA_PATH       ?= /opt/nvidia/cuda
+endif
+
 ifneq ($(DARWIN),)
 	XCODE_GE_5 = $(shell expr `xcodebuild -version | grep -i xcode | awk '{print $$2}' | cut -d'.' -f1` \>= 5)
 endif
@@ -91,16 +92,14 @@ CCFLAGS     :=
 LDFLAGS     :=
 
 # Extra user flags
-#EXTRA_NVCCFLAGS   ?= --default-stream
 EXTRA_NVCCFLAGS   ?= 
 EXTRA_LDFLAGS     ?=
 EXTRA_CCFLAGS     ?= 
-#EXTRA_CCFLAGS     ?= -fsanitize=bounds -fsanitize-undefined-trap-on-error -fstack-protector
 
 # OS-specific build flags
 ifneq ($(DARWIN),)
   LDFLAGS += -rpath $(CUDA_PATH)/lib
-  CCFLAGS += -arch $(OS_ARCH)
+  #CCFLAGS += -arch $(OS_ARCH)
 else
   ifeq ($(OS_ARCH),armv7l)
     ifeq ($(abi),androideabi)
@@ -206,22 +205,19 @@ chunk.o:chunk.cpp
 pipeline.o:pipeline.cu
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
+lp_sum.o:lp_sum.cu
+	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
+
 stream.o:stream.cu
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
-# dinvgauss.o:dinvgauss.cu
-	# $(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
-
-pipeline: pipeline.o stream.o chunk.o
+pipeline: pipeline.o stream.o chunk.o lp_sum.o
 	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
-	#$(EXEC) mkdir -p ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
-	#$(EXEC) cp $@ ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))
 
 run: build
 	$(EXEC) ./pipeline
 
 clean:
 	rm -f pipeline pipeline.o stream.o dinvgauss.o chunk.o
-	#rm -rf ../../bin/$(OS_ARCH)/$(OSLOWER)/$(TARGET)$(if $(abi),/$(abi))/pipeline
 
 clobber: clean
