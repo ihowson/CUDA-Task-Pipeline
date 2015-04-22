@@ -3,16 +3,25 @@
 # FIXME we assume two components
 M <- 2
 
-invgaussmixEM <- function(x) {
+invgaussmixEM <- function(x, initials=NULL) {
     # init
     max.iters <- 100  # TODO move this to function arg
     iterations <- 0
     N <- length(x)
 
-    # TODO probably need to init these a little differently (random init) so they don't follow the exact same path
+    # Set initial conditions
     mu <- matrix(c(0.99, 1.01), nrow=1)
     lambda <- matrix(c(1.0, 1.0), nrow=1)
     alpha <- matrix(c(0.5, 0.5), nrow=1)  # mixing components
+
+    if (!is.null(initials)) {
+        for (m in 1:M) {
+            mu[1, m] <- initials[[m]]$mu
+            lambda[1, m] <- initials[[m]]$lambda
+            alpha[1, m] <- initials[[m]]$alpha
+        }
+    }
+
     epsilon <- 0.000001
     diff <- 1
     log.lik <- epsilon + 1
