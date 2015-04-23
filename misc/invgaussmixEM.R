@@ -1,5 +1,7 @@
 # EM implementation
 
+require(statmod)
+
 # FIXME we assume two components
 M <- 2
 
@@ -81,7 +83,6 @@ invgaussmixEM <- function(x, initials=NULL) {
         mu.new <- colSums(x * member.prob) / member.prob.sum  # should be 1x2 matrix
         lambda.new <- member.prob.sum / colSums(((x_expanded - mu_expanded) ^ 2 * member.prob) / (mu_expanded ^ 2 * x_expanded))
 
-
         mu <- mu.new
         lambda <- lambda.new
         alpha <- alpha.new
@@ -93,7 +94,7 @@ invgaussmixEM <- function(x, initials=NULL) {
         # LATER: it might make sense to try this algorithm using RGPU or something - it would be ideal to be able to plug in R code to your CUDA code. tHis might be a halfway option taht is fast enough
     }
 
-    result <- list(x=x, alpha=alpha, mu=mu, lambda=lambda)  # TODO add llik here
+    result <- list(x=x, alpha=alpha, mu=mu, lambda=lambda, llik=log.lik)
     class(result) <- "mixEM"
     result
 }
